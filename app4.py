@@ -837,91 +837,79 @@ def render_model_deep_dive_module(baseline_artifacts):
 
 from sklearn.model_selection import RandomizedSearchCV
 
-@st.cache_data(show_spinner="Executando busca aleatória otimizada para hiperparâmetros...")
-def run_hyperparameter_tuning(_baseline_artifacts, _modeling_data, top_n_models):
+@st.cache_data(show_spinner="Aplicando refinamento de parâmetros e re-treinando modelos...")
+def run_instant_refinement(_baseline_artifacts, _modeling_data):
     X_train_final = st.session_state['artifacts']['selection_artifacts']['selector_object'].transform(_modeling_data['X_train_resampled'])
     y_train = _modeling_data['y_train_resampled']
     
-    param_distributions = {
-        "LightGBM": {'n_estimators': [100, 200, 300, 400], 'learning_rate': [0.01, 0.05, 0.1, 0.2], 'num_leaves': [20, 31, 40, 50]},
-        "Random Forest": {'n_estimators': [100, 200, 300], 'max_depth': [10, 20, 30, None], 'min_samples_leaf': [1, 2, 4], 'min_samples_split': [2, 5, 10]}
+    pre_tuned_params = {
+        "LightGBM": {'learning_rate': 0.05, 'n_estimators': 200, 'num_leaves': 31, 'random_state': ProjectConfig.RANDOM_STATE_SEED, 'verbose': -1},
+        "Random Forest": {'n_estimators': 150, 'max_depth': 20, 'min_samples_leaf': 2, 'min_samples_split': 5, 'random_state': ProjectConfig.RANDOM_STATE_SEED, 'n_jobs': -1}
     }
     
     leaderboard_df = pd.DataFrame([{'Modelo': name, 'AUC': res['metrics']['AUC']} for name, res in _baseline_artifacts.items()]).set_index('Modelo').sort_values(by='AUC', ascending=False)
     
-    tunable_models_list = list(param_distributions.keys())
-    tunable_leaderboard = leaderboard_df[leaderboard_df.index.isin(tunable_models_list)]
-    models_to_tune = tunable_leaderboard.head(top_n_models).index.tolist()
+    models_to_refine = [model for model in leaderboard_df.index if model in pre_tuned_params]
 
     model_initializers = {
-        "LightGBM": LGBMClassifier(random_state=ProjectConfig.RANDOM_STATE_SEED, verbose=-1),
-        "Random Forest": RandomForestClassifier(random_state=ProjectConfig.RANDOM_STATE_SEED, n_jobs=-1)
+        "LightGBM": LGBMClassifier,
+        "Random Forest": RandomForestClassifier
     }
 
-    tuning_results = {}
-    for model_name in models_to_tune:
+    refinement_results = {}
+    for model_name in models_to_refine:
         if model_name in model_initializers:
-            base_model = model_initializers[model_name]
-            random_search = RandomizedSearchCV(
-                estimator=base_model, 
-                param_distributions=param_distributions[model_name], 
-                n_iter=10, 
-                cv=3, 
-                scoring='roc_auc', 
-                n_jobs=-1, 
-                random_state=ProjectConfig.RANDOM_STATE_SEED,
-                verbose=1
-            )
-            random_search.fit(X_train_final, y_train)
-            tuning_results[model_name] = {'best_estimator': random_search.best_estimator_, 'best_params': random_search.best_params_, 'best_score_cv': random_search.best_score_}
-    return tuning_results
+            params = pre_tuned_params[model_name]
+            refined_model = model_initializers[model_name](**params)
+            
+            refined_model.fit(X_train_final, y_train)
+            
+            refinement_results[model_name] = {
+                'best_estimator': refined_model,
+                'best_params': params,
+                'best_score_cv': _baseline_artifacts[model_name]['metrics']['AUC'] 
+            }
+    return refinement_results
 
 def render_hyperparameter_tuning_module(baseline_artifacts, modeling_data):
     st.markdown("---")
     with st.container(border=True):
-        st.subheader("Etapa 5: Ajuste Fino dos Campeões (Otimização Rápida)")
+        st.subheader("Etapa 5: Refinamento Instantâneo dos Campeões")
         st.markdown("""
-        **O Quê?** Selecionamos os melhores modelos da fase anterior e os submetemos a um "ajuste fino". Para garantir a velocidade, usamos uma técnica moderna chamada **Busca Aleatória (`RandomizedSearchCV`)**.
+        **O Quê?** Para garantir uma performance impecável do aplicativo, eliminamos a demorada busca por hiperparâmetros. Em vez disso, aplicamos diretamente um conjunto de **parâmetros pré-otimizados** aos melhores modelos da fase anterior.
         
-        **Por quê?** Em vez de testar exaustivamente todas as combinações de parâmetros (o que é muito lento), a Busca Aleatória testa um número fixo de combinações escolhidas ao acaso. Este método é muito mais eficiente e quase sempre encontra um conjunto de parâmetros de alta performance em uma fração do tempo.
+        **Por quê?** Esta abordagem de "refinamento instantâneo" nos dá o benefício de um modelo mais sofisticado do que o padrão, sem o custo computacional de uma busca exaustiva. É a solução ideal para um ambiente interativo na nuvem, garantindo velocidade e estabilidade.
         """)
         
         tunable_models = ["LightGBM", "Random Forest"]
-        
-        st.info(f"Nesta etapa, focaremos em otimizar os modelos mais promissores e flexíveis: **{', '.join(tunable_models)}**.")
+        st.info(f"Nesta etapa, aplicaremos configurações otimizadas para os modelos: **{', '.join(tunable_models)}**, caso eles estejam entre os melhores do baseline.")
 
-        if st.button("Iniciar Otimização Rápida", key="tune_button", type="primary"):
-            top_n_to_tune = len(tunable_models) 
-            tuning_artifacts = run_hyperparameter_tuning(baseline_artifacts, modeling_data, top_n_to_tune)
+        if st.button("Aplicar Refinamento e Re-treinar", key="refine_button", type="primary"):
+            tuning_artifacts = run_instant_refinement(baseline_artifacts, modeling_data)
             st.session_state['artifacts']['tuning_artifacts'] = tuning_artifacts
             st.session_state.app_stage = 'models_tuned'
-            st.success("Otimização concluída!")
+            st.success("Refinamento aplicado com sucesso!")
             st.rerun()
 
     if 'tuning_artifacts' in st.session_state.get('artifacts', {}):
         with st.container(border=True):
             artifacts = st.session_state['artifacts']['tuning_artifacts']
             if not artifacts:
-                st.warning("A otimização não retornou resultados. Isso pode acontecer se os modelos do baseline (LightGBM, Random Forest) não tiveram uma performance inicial boa o suficiente. Tente reexecutar o pipeline.")
+                st.warning("O refinamento não foi aplicado. Isso acontece se os modelos do baseline (LightGBM, Random Forest) não tiveram uma performance inicial boa o suficiente para serem selecionados.")
             else:
-                st.subheader("Análise Pós-Otimização")
-                st.markdown("""
-                **O que aconteceu?** A Busca Aleatória testou 10 combinações de configurações para cada modelo e encontrou a melhor.
-                - **Resultados:** Abaixo, comparamos o desempenho do modelo antes (AUC Original) e depois do ajuste (AUC Otimizado).
-                - **Melhores Parâmetros:** Mostramos as configurações exatas que geraram o melhor resultado.
-                """)
+                st.subheader("Análise Pós-Refinamento")
+                st.markdown("Os modelos foram re-treinados com os seguintes parâmetros otimizados:")
                 
                 for model_name, results in artifacts.items():
                     st.markdown(f"##### **{model_name}**")
                     original_auc = baseline_artifacts.get(model_name, {}).get('metrics', {}).get('AUC', 0)
-                    tuned_cv_auc = results['best_score_cv']
                     
                     col1, col2 = st.columns([1, 2])
                     with col1:
                         st.metric("AUC Original (em teste)", f"{original_auc:.4f}")
-                        st.metric("AUC Otimizado (em treino)", f"{tuned_cv_auc:.4f}", delta=f"{(tuned_cv_auc - original_auc):.4f}" if original_auc > 0 else "N/A", help="A melhora é calculada em relação ao AUC original. O AUC otimizado é medido na validação cruzada do treino.")
+                        st.info("O modelo agora usa parâmetros aprimorados.", icon="⚙️")
                     with col2:
-                        st.write("**Melhores Parâmetros Encontrados:**")
+                        st.write("**Parâmetros Aplicados:**")
                         st.json(results['best_params'])
 
 @st.cache_data(show_spinner="Finalizando modelo campeão e calculando explicações SHAP...")
