@@ -1085,8 +1085,8 @@ def render_local_xai_module(final_artifacts, modeling_data, selection_artifacts)
 
                 st.markdown("##### Explicação Visual da Previsão (SHAP Force Plot)")
                 
-                shap_values_for_all_classes = explainer.shap_values(input_final[0])
-                shap_values_for_positive_class = shap_values_for_all_classes[1]
+                shap_values_for_all_classes = explainer.shap_values(input_final)
+                shap_values_for_positive_class = shap_values_for_all_classes[1][0]
                 
                 force_plot = shap.force_plot(
                     base_value=float(explainer.expected_value[1]),
