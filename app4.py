@@ -1127,7 +1127,7 @@ def render_local_xai_module(final_artifacts, modeling_data, selection_artifacts)
                 shap_values_local = explainer.shap_values(input_final[0])
                 
                 force_plot = shap.force_plot(
-                    base_value=float(explainer.expected_value),
+                    base_value=float(explainer.expected_value[1]),
                     shap_values=shap_values_local,
                     features=pd.DataFrame(input_final, columns=selection_artifacts['selected_feature_names']).iloc[0]
                 )
@@ -1147,7 +1147,7 @@ def render_local_xai_module(final_artifacts, modeling_data, selection_artifacts)
                     """, icon="💡"
                 )
 
-def render_business_impact_module(final_model_artifacts, modeling_data):
+def render_business_impact_module(final_artifacts):
     with st.container(border=True):
         st.subheader("Simulação de Impacto no Negócio e Análise de ROI")
         st.markdown("""
@@ -1165,19 +1165,18 @@ def render_business_impact_module(final_model_artifacts, modeling_data):
             effectiveness = st.slider("Efetividade da Ação Proativa (%)", 0, 100, 50, help="Qual a % de reclamações que a ação proativa consegue evitar?")
 
         st.markdown("##### 2. Defina o Público-Alvo da Campanha com o Limiar de Risco")
-        decision_threshold = st.slider("Contatar clientes com probabilidade de reclamação acima de:", 0.0, 1.0, 0.5, 0.01, help="Limiar de decisão do modelo para classificar um cliente como 'de risco'.")
-
-        y_proba = final_model_artifacts['predictions_proba']
-        y_test = modeling_data['y_test'].values
+        decision_threshold = st.slider("Contatar clientes com probabilidade de reclamação acima de:", 0.0, 1.0, st.session_state.get('decision_threshold', 0.5), 0.01, key="roi_threshold")
+        
+        y_proba = final_artifacts['y_proba_final']
+        y_test = final_artifacts['y_test']
         predictions_as_risk = (y_proba >= decision_threshold)
         
         try:
             tn, fp, fn, tp = confusion_matrix(y_test, predictions_as_risk).ravel()
         except ValueError:
             st.warning("O limiar escolhido não identificou clientes em nenhuma categoria. Ajuste o limiar.")
-            return
+            tn, fp, fn, tp = 0, 0, 0, 0 
 
-        # --- Cálculos da Simulação ---
         customers_to_contact = tp + fp
         campaign_total_cost = customers_to_contact * cost_proactive
         
@@ -1192,8 +1191,6 @@ def render_business_impact_module(final_model_artifacts, modeling_data):
         st.markdown("---")
         st.markdown("##### 3. Resultados da Simulação Financeira")
         
-        st.markdown("##### Visualização do Retorno Sobre o Investimento (ROI)")
-        
         fig_roi = go.Figure(go.Indicator(
             mode = "gauge+number",
             value = roi,
@@ -1207,9 +1204,9 @@ def render_business_impact_module(final_model_artifacts, modeling_data):
                 'borderwidth': 2,
                 'bordercolor': "gray",
                 'steps': [
-                    {'range': [-100, 0], 'color': '#FF6347'}, # Cor para ROI negativo
-                    {'range': [0, 50], 'color': '#FFD700'},    # Cor para ROI modesto
-                    {'range': [50, 200], 'color': '#32CD32'}], # Cor para ROI alto
+                    {'range': [-100, 0], 'color': '#FF6347'},
+                    {'range': [0, 50], 'color': '#FFD700'},
+                    {'range': [50, 200], 'color': '#32CD32'}],
             }))
         
         fig_roi.update_layout(height=350, margin=dict(t=50, b=10))
@@ -1219,31 +1216,28 @@ def render_business_impact_module(final_model_artifacts, modeling_data):
         res_col3.metric("Custo da Campanha Proativa", f"R$ {campaign_total_cost:,.2f}")
         res_col4.metric("Custo Evitado (Reativo)", f"R$ {cost_avoided:,.2f}")
         res_col5.metric("Valor Líquido Gerado", f"R$ {net_value:,.2f}")
-        
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.metric("Retorno sobre o Investimento (ROI)", f"{roi:.2f}%")
 
-def render_export_module(final_model_artifacts, selection_artifacts, processed_df):
+def render_export_module(final_artifacts, selection_artifacts, processed_df):
     with st.container(border=True):
         st.subheader("Exportação de Resultados e Artefatos")
         st.markdown("Baixe os resultados da análise para uso externo ou para compartilhar com sua equipe.")
         
-        y_proba = final_model_artifacts['predictions_proba']
-        y_test_index = st.session_state['artifacts']['modeling_data']['y_test'].index
+        y_proba = final_artifacts['y_proba_final']
+        y_test_index = final_artifacts['y_test'].index
         
         results_df = processed_df.loc[y_test_index].copy()
         results_df['probabilidade_reclamacao'] = y_proba
         
-        export_threshold = st.slider("Limiar de risco para lista de clientes:", 0.0, 1.0, 0.5, 0.01, key="export_threshold")
+        export_threshold = st.slider("Limiar de risco para lista de clientes:", 0.0, 1.0, st.session_state.get('decision_threshold', 0.5), 0.01, key="export_threshold")
         high_risk_df = results_df[results_df['probabilidade_reclamacao'] >= export_threshold].sort_values('probabilidade_reclamacao', ascending=False)
         
         col1, col2 = st.columns(2)
         with col1:
             st.download_button(label=f"📥 Baixar Lista de {len(high_risk_df)} Clientes de Alto Risco (.csv)", data=high_risk_df.to_csv(index=False).encode('utf-8'), file_name=f"clientes_risco.csv", mime="text/csv", use_container_width=True)
         with col2:
-            feature_ranking_df = selection_artifacts['feature_ranking_df']
-            st.download_button(label="📥 Baixar Ranking de Features (.csv)", data=feature_ranking_df.to_csv(index=False).encode('utf-8'), file_name="feature_ranking.csv", mime="text/csv", use_container_width=True)
-
+            if 'feature_ranking_df' in selection_artifacts:
+                feature_ranking_df = selection_artifacts['feature_ranking_df']
+                st.download_button(label="📥 Baixar Ranking de Features (.csv)", data=feature_ranking_df.to_csv(index=False).encode('utf-8'), file_name="feature_ranking.csv", mime="text/csv", use_container_width=True)
 
 def render_documentation_page():
     st.header("Documentação do Projeto e Metodologia Aplicada")
