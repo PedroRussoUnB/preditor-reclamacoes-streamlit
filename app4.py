@@ -686,73 +686,45 @@ def render_feature_selection_module(modeling_data):
             with st.expander("Ver Lista de Features Selecionadas para a Modelagem"):
                 st.dataframe(pd.DataFrame(artifacts['selected_feature_names'], columns=["Feature Selecionada"]), use_container_width=True)
 
-@st.cache_data(show_spinner="Treinando todos os 8 modelos de baseline... Este processo é intensivo e pode levar alguns minutos.")
-def train_all_baseline_models(_modeling_data, _selection_artifacts):
-    """Treina um portfólio de modelos e retorna seus resultados de performance."""
-    selector = _selection_artifacts['selector_object']
-    X_train_final = selector.transform(_modeling_data['X_train_resampled'])
-    y_train = _modeling_data['y_train_resampled']
-    X_test_final = selector.transform(_modeling_data['X_test'])
-    y_test = _modeling_data['y_test']
-    
-    models_to_test = {
-        "LightGBM": LGBMClassifier(random_state=ProjectConfig.RANDOM_STATE_SEED, verbose=-1),
-        "XGBoost": XGBClassifier(random_state=ProjectConfig.RANDOM_STATE_SEED, use_label_encoder=False, eval_metric='logloss', verbosity=0),
-        "Random Forest": RandomForestClassifier(random_state=ProjectConfig.RANDOM_STATE_SEED),
-        "Gradient Boosting": GradientBoostingClassifier(random_state=ProjectConfig.RANDOM_STATE_SEED),
-        "SVC": SVC(probability=True, random_state=ProjectConfig.RANDOM_STATE_SEED),
-        "AdaBoost": AdaBoostClassifier(random_state=ProjectConfig.RANDOM_STATE_SEED),
-        "Decision Tree": DecisionTreeClassifier(random_state=ProjectConfig.RANDOM_STATE_SEED),
-        "KNN": KNeighborsClassifier(),
-    }
-    
-    baseline_results = {}
-    for name, model in models_to_test.items():
-        start_time = time.time()
-        model.fit(X_train_final, y_train)
-        y_pred = model.predict(X_test_final)
-        y_proba = model.predict_proba(X_test_final)[:, 1]
-        end_time = time.time()
-        
-        metrics = {
-            'AUC': roc_auc_score(y_test, y_proba),
-            'Recall': recall_score(y_test, y_pred),
-            'Precisão': precision_score(y_test, y_pred),
-            'F1-Score': f1_score(y_test, y_pred),
-            'MCC': matthews_corrcoef(y_test, y_pred),
-            'Tempo de Treino (s)': end_time - start_time
-        }
-        
-        baseline_results[name] = {
-            'model_object': model, 'metrics': metrics,
-            'full_report': classification_report(y_test, y_pred, output_dict=True, target_names=['Não Reclamou', 'Reclamou']),
-            'confusion_matrix': confusion_matrix(y_test, y_pred),
-            'roc_curve_data': roc_curve(y_test, y_proba)
-        }
-    return baseline_results
+import pickle
 
-def render_baseline_modeling_module(modeling_data, selection_artifacts):
+@st.cache_data(show_spinner="Carregando resultados dos modelos de baseline...")
+def load_baseline_results():
+    """Carrega os resultados pré-treinados do baseline a partir de um arquivo pickle."""
+    try:
+        with open('baseline_results.pkl', 'rb') as f:
+            baseline_results = pickle.load(f)
+        return baseline_results
+    except FileNotFoundError:
+        st.error("ERRO CRÍTICO: O arquivo 'baseline_results.pkl' não foi encontrado. Por favor, execute o script de pré-treinamento para gerá-lo.", icon="🚨")
+        return None
+    except Exception as e:
+        st.error(f"Erro ao carregar o arquivo de resultados: {e}", icon="🚨")
+        return None
+
+def render_baseline_modeling_module():
     with st.container(border=True):
         st.subheader("Etapa 3: A Competição dos Algoritmos (Baseline)")
         st.markdown("""
-        **O Quê?** Agora começa a parte divertida! Pegamos nossas features selecionadas e promovemos uma competição entre 8 diferentes algoritmos de Machine Learning. De modelos mais simples como Árvores de Decisão a potências como XGBoost e LightGBM, todos são treinados na mesma base de dados para ver qual se adapta melhor ao nosso problema.
+        **O Quê?** Aqui começa a competição! Para garantir uma experiência de usuário instantânea, carregamos os resultados de uma competição pré-executada entre 8 diferentes algoritmos de Machine Learning. De modelos simples como Árvores de Decisão a potências como XGBoost e LightGBM, todos foram treinados na mesma base de dados para ver qual se adapta melhor ao nosso problema.
 
-        **Por quê?** Essa abordagem de "campeonato" nos permite estabelecer uma **linha de base (baseline)** de performance. Em vez de apostar em um único algoritmo, testamos vários para identificar objetivamente quais são os mais promissores. Os modelos com melhor desempenho aqui serão os candidatos para a fase de otimização fina.
+        **Por quê?** Esta abordagem nos permite apresentar uma **linha de base (baseline)** de performance completa sem o tempo de espera do treinamento. Você obtém a visão geral do "campeonato" de modelos instantaneamente.
         """)
         
-        if st.button("Iniciar Treinamento em Lote", key="train_button"):
-            baseline_artifacts = train_all_baseline_models(modeling_data, selection_artifacts)
-            st.session_state['artifacts']['baseline_artifacts'] = baseline_artifacts
-            st.session_state.app_stage = 'baselines_trained'
-            st.success("Treinamento em lote concluído!")
-            st.rerun()
+        if st.button("Carregar Resultados da Competição", key="load_button"):
+            baseline_artifacts = load_baseline_results()
+            if baseline_artifacts:
+                st.session_state['artifacts']['baseline_artifacts'] = baseline_artifacts
+                st.session_state.app_stage = 'baselines_trained'
+                st.success("Resultados da competição carregados com sucesso!")
+                st.rerun()
 
     if 'baseline_artifacts' in st.session_state.get('artifacts', {}):
         with st.container(border=True):
             artifacts = st.session_state['artifacts']['baseline_artifacts']
             st.subheader("Análise Pós-Treinamento: O Leaderboard")
             st.markdown("""
-            **O que aconteceu?** Todos os 8 modelos foram treinados e avaliados no conjunto de teste. A tabela abaixo é o nosso **Leaderboard de Performance**.
+            **O que aconteceu?** Os resultados de 8 modelos, previamente treinados e avaliados no conjunto de teste, foram carregados. A tabela abaixo é o nosso **Leaderboard de Performance**.
             
             **Como interpretar:**
             - **AUC:** A principal métrica de performance geral. Quanto maior (mais perto de 1.0), melhor o modelo consegue distinguir entre um cliente que vai reclamar e um que não vai.
@@ -790,7 +762,8 @@ def display_modeling_page(df):
     
     # Módulo 3: Treinamento de Baseline (só aparece se a etapa 2 foi concluída)
     if 'selection_artifacts' in st.session_state.get('artifacts', {}):
-        render_baseline_modeling_module(st.session_state.artifacts['modeling_data'], st.session_state.artifacts['selection_artifacts'])
+
+render_baseline_modeling_module()
     
     # Módulo 4: Análise Detalhada dos Modelos (só aparece se a etapa 3 foi concluída)
     if 'baseline_artifacts' in st.session_state.get('artifacts', {}):
@@ -873,15 +846,11 @@ def render_model_deep_dive_module(baseline_artifacts):
                 else:
                     st.info(f"O modelo '{model_to_inspect}' não possui um atributo '.feature_importances_' para análise direta de importância (ex: SVM com kernel não-linear).")
 
-
 @st.cache_data(show_spinner="Executando busca em grade para otimização de hiperparâmetros...")
 def run_hyperparameter_tuning(_baseline_artifacts, _modeling_data, top_n_models):
     """Executa GridSearchCV nos N melhores modelos do baseline."""
     X_train_final = st.session_state['artifacts']['selection_artifacts']['selector_object'].transform(_modeling_data['X_train_resampled'])
     y_train = _modeling_data['y_train_resampled']
-    
-    leaderboard_df = pd.DataFrame([{'Modelo': name, 'AUC': res['metrics']['AUC']} for name, res in _baseline_artifacts.items()]).set_index('Modelo').sort_values(by='AUC', ascending=False)
-    models_to_tune = leaderboard_df.head(top_n_models).index.tolist()
     
     param_grids = {
         "LightGBM": {'n_estimators': [100, 200, 300], 'learning_rate': [0.01, 0.05, 0.1], 'num_leaves': [20, 31, 40]},
@@ -891,6 +860,12 @@ def run_hyperparameter_tuning(_baseline_artifacts, _modeling_data, top_n_models)
         "SVC": {'C': [1, 10, 50], 'gamma': ['scale', 'auto'], 'kernel': ['rbf']}
     }
     
+    leaderboard_df = pd.DataFrame([{'Modelo': name, 'AUC': res['metrics']['AUC']} for name, res in _baseline_artifacts.items()]).set_index('Modelo').sort_values(by='AUC', ascending=False)
+    
+    tunable_models_list = list(param_grids.keys())
+    tunable_leaderboard = leaderboard_df[leaderboard_df.index.isin(tunable_models_list)]
+    models_to_tune = tunable_leaderboard.head(top_n_models).index.tolist()
+
     model_initializers = {
         "LightGBM": LGBMClassifier(random_state=ProjectConfig.RANDOM_STATE_SEED, verbose=-1),
         "XGBoost": XGBClassifier(random_state=ProjectConfig.RANDOM_STATE_SEED, use_label_encoder=False, eval_metric='logloss', verbosity=0),
@@ -918,7 +893,13 @@ def render_hyperparameter_tuning_module(baseline_artifacts, modeling_data):
         **Por quê?** Os modelos vêm com configurações padrão. A otimização testa centenas de combinações dessas configurações (usando `GridSearchCV`) para encontrar a combinação perfeita que maximiza o poder preditivo do nosso modelo para este problema específico.
         """)
         
-        top_n = st.slider("Selecione quantos dos melhores modelos você deseja otimizar:", 1, 3, 2, key="tuner_slider")
+        param_grids = {
+            "LightGBM": {}, "XGBoost": {}, "Random Forest": {}, 
+            "Gradient Boosting": {}, "SVC": {}
+        }
+        max_tunable_models = len(param_grids)
+        
+        top_n = st.slider(f"Selecione quantos dos melhores modelos (de um total de {max_tunable_models} otimizáveis) você deseja otimizar:", 1, max_tunable_models, min(2, max_tunable_models), key="tuner_slider")
         
         if st.button("Iniciar Otimização dos Melhores Modelos", key="tune_button"):
             tuning_artifacts = run_hyperparameter_tuning(baseline_artifacts, modeling_data, top_n)
@@ -951,6 +932,7 @@ def render_hyperparameter_tuning_module(baseline_artifacts, modeling_data):
                 with col2:
                     st.write("**Melhores Parâmetros Encontrados:**")
                     st.json(results['best_params'])
+
 @st.cache_data
 def select_and_evaluate_final_model(_tuning_artifacts, _modeling_data, _selection_artifacts):
     """Seleciona o melhor modelo após o tuning e realiza uma avaliação final completa."""
