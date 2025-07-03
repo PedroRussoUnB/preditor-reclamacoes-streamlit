@@ -766,8 +766,6 @@ def render_baseline_modeling_module(modeling_data, selection_artifacts):
             sorted_df = leaderboard_df.sort_values(by=sort_by, ascending=False)
             st.dataframe(sorted_df.style.background_gradient(cmap='viridis', subset=[sort_by]).format("{:.4f}"), use_container_width=True)
 
-render_final_model_analysis_module(st.session_state.artifacts['tuning_artifacts'], st.session_state.artifacts['modeling_data'], st.session_state.artifacts['selection_artifacts'])
-
 def render_model_deep_dive_module(baseline_artifacts):
     st.markdown("---")
     with st.container(border=True):
@@ -1266,6 +1264,34 @@ def render_documentation_page():
         - **Otimização (Tuning):** Os melhores modelos da fase de baseline passaram por um processo de otimização de hiperparâmetros com `GridSearchCV`.
         - **Métricas Chave:** A **AUC** foi a principal métrica para otimização, e o **Recall** e a **Curva de Precisão-Recall** foram utilizados para a análise de negócio.
         """)
+
+def display_modeling_page(df):
+    st.header("Pipeline de Modelagem Preditiva", divider='rainbow')
+    st.markdown("""
+    Bem-vindo à central de Machine Learning. Nesta página, executaremos o pipeline completo, desde a preparação dos dados até o treinamento e avaliação de múltiplos modelos de classificação.
+    Cada etapa foi projetada para ser executada sequencialmente, com explicações detalhadas para que você entenda não apenas **o que** está sendo feito, mas **por que** cada decisão é crucial para o sucesso do projeto.
+    """)
+
+    if df is None or df.empty:
+        st.error("⚠️ Os dados precisam ser processados na página 'Análise do Dataset' antes de iniciar a modelagem.")
+        return
+
+    render_data_preparation_module(df)
+    
+    if 'modeling_data' in st.session_state.get('artifacts', {}):
+        render_feature_selection_module(st.session_state.artifacts['modeling_data'])
+    
+    if 'selection_artifacts' in st.session_state.get('artifacts', {}):
+        render_baseline_modeling_module(st.session_state.artifacts['modeling_data'], st.session_state.artifacts['selection_artifacts'])
+    
+    if 'baseline_artifacts' in st.session_state.get('artifacts', {}):
+        render_model_deep_dive_module(st.session_state.artifacts['baseline_artifacts'])
+    
+    if 'baseline_artifacts' in st.session_state.get('artifacts', {}):
+        render_hyperparameter_tuning_module(st.session_state.artifacts['baseline_artifacts'], st.session_state.artifacts['modeling_data'])
+        
+    if 'tuning_artifacts' in st.session_state.get('artifacts', {}):
+        render_final_model_analysis_module(st.session_state.artifacts['tuning_artifacts'], st.session_state.artifacts['modeling_data'], st.session_state.artifacts['selection_artifacts'])
 
 def main():
     """
