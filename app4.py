@@ -1085,12 +1085,21 @@ def render_local_xai_module(final_artifacts, modeling_data, selection_artifacts)
 
                 st.markdown("##### Explicação Visual da Previsão (SHAP Force Plot)")
                 
-                shap_values_for_all_classes = explainer.shap_values(input_final)
-                shap_values_for_positive_class = shap_values_for_all_classes[1][0]
+                shap_output = explainer.shap_values(input_final)
+
+                if isinstance(shap_output, list):
+                    shap_values_for_plot = shap_output[1][0]
+                else:
+                    shap_values_for_plot = shap_output[0]
+                
+                if isinstance(explainer.expected_value, (list, np.ndarray)):
+                    base_value_for_plot = float(explainer.expected_value[1])
+                else:
+                    base_value_for_plot = float(explainer.expected_value)
                 
                 force_plot = shap.force_plot(
-                    base_value=float(explainer.expected_value[1]),
-                    shap_values=shap_values_for_positive_class,
+                    base_value=base_value_for_plot,
+                    shap_values=shap_values_for_plot,
                     features=pd.DataFrame(input_final, columns=selection_artifacts['selected_feature_names']).iloc[0]
                 )
                 
