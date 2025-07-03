@@ -607,15 +607,13 @@ class ManualSelector:
         return X[:, self.support_]
 
 @st.cache_data(show_spinner="Executando seleção de features por importância...")
-def run_feature_selection_by_importance(_modeling_data):
+def run_feature_selection_by_importance(X_train, y_train, feature_names):
     """Executa a seleção de features baseada na importância de um modelo LightGBM."""
-    X_train, y_train = _modeling_data['X_train_orig'], _modeling_data['y_train_orig']
-    
     estimator = LGBMClassifier(random_state=ProjectConfig.RANDOM_STATE_SEED, n_estimators=50, n_jobs=-1, verbose=-1)
     estimator.fit(X_train, y_train)
     
     importances_df = pd.DataFrame({
-        'Feature': _modeling_data['processed_feature_names'],
+        'Feature': feature_names,
         'Importance': estimator.feature_importances_
     }).sort_values(by='Importance', ascending=False)
     
@@ -630,7 +628,7 @@ def run_feature_selection_by_importance(_modeling_data):
     selected_features_names = top_features['Feature'].tolist()
 
     selected_indices = [
-        _modeling_data['processed_feature_names'].index(f) for f in selected_features_names
+        feature_names.index(f) for f in selected_features_names
     ]
     
     selector_object = ManualSelector(selected_indices)
@@ -654,7 +652,11 @@ def render_feature_selection_module(modeling_data):
         """)
 
         if st.button("Executar Seleção Automática de Features", key="fs_button_auto"):
-            selection_artifacts = run_feature_selection_by_importance(modeling_data)
+            selection_artifacts = run_feature_selection_by_importance(
+                modeling_data['X_train_orig'],
+                modeling_data['y_train_orig'],
+                modeling_data['processed_feature_names']
+            )
             st.session_state['artifacts']['selection_artifacts'] = selection_artifacts
             st.session_state.app_stage = 'features_selected'
             st.success("Seleção automática de features concluída!")
