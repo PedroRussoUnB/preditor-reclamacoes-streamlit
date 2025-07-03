@@ -589,45 +589,52 @@ def render_data_preparation_module(df):
                 fig.add_trace(go.Scatter(x=df_after['PC1'], y=df_after['PC2'], mode='markers', marker=dict(color=df_after['target'], colorscale=[ProjectConfig.PRIMARY_COLOR, ProjectConfig.SECONDARY_COLOR], showscale=False), name='Depois'), row=1, col=2)
                 st.plotly_chart(fig, use_container_width=True)
 
-# Insira este bloco no lugar das funções run_feature_selection_cv e render_feature_selection_module
+class ManualSelector:
+    """Um seletor simulado para manter compatibilidade com o pipeline após a seleção manual de features."""
+    def __init__(self, selected_indices):
+        self.support_ = None
+        self.selected_indices_ = selected_indices
+    
+    def fit(self, X):
+        # Cria a máscara de suporte no momento do fit para ter a dimensão correta
+        self.support_ = np.zeros(X.shape[1], dtype=bool)
+        self.support_[self.selected_indices_] = True
+    
+    def transform(self, X):
+        # Garante que o fit foi chamado antes do transform
+        if self.support_ is None:
+            raise RuntimeError("O método 'fit' deve ser chamado antes do 'transform'.")
+        return X[:, self.support_]
 
 @st.cache_data(show_spinner="Executando seleção de features por importância...")
 def run_feature_selection_by_importance(_modeling_data, num_features_to_select):
     """Executa a seleção de features baseada na importância de um modelo LightGBM."""
     X_train, y_train = _modeling_data['X_train_resampled'], _modeling_data['y_train_resampled']
     
-    # 1. Treinar um modelo uma única vez
     estimator = LGBMClassifier(random_state=ProjectConfig.RANDOM_STATE_SEED, n_jobs=-1, verbose=-1)
     estimator.fit(X_train, y_train)
     
-    # 2. Extrair a importância das features
     importances_df = pd.DataFrame({
         'Feature': _modeling_data['processed_feature_names'],
         'Importance': estimator.feature_importances_
     }).sort_values(by='Importance', ascending=False)
     
-    # 3. Selecionar as N melhores features
     top_features = importances_df.head(num_features_to_select)
     selected_features_names = top_features['Feature'].tolist()
-
-    # Criar um objeto "seletor" simulado para compatibilidade com o resto do código
-    class ManualSelector:
-        def __init__(self, selected_indices):
-            self.support_ = np.zeros(len(_modeling_data['processed_feature_names']), dtype=bool)
-            self.support_[selected_indices] = True
-        def transform(self, X):
-            return X[:, self.support_]
 
     selected_indices = [
         _modeling_data['processed_feature_names'].index(f) for f in selected_features_names
     ]
+    
+    # Agora usamos a classe definida globalmente
     selector_object = ManualSelector(selected_indices)
+    selector_object.fit(X_train) # Chama o fit para criar a máscara
 
     selection_artifacts = {
         'selector_object': selector_object,
         'optimal_n_features': num_features_to_select,
         'selected_feature_names': selected_features_names,
-        'feature_ranking_df': importances_df, # Agora é o ranking de importância
+        'feature_ranking_df': importances_df,
     }
     return selection_artifacts
 
