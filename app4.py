@@ -606,34 +606,58 @@ class ManualSelector:
             raise RuntimeError("O método 'fit' deve ser chamado antes do 'transform'.")
         return X[:, self.support_]
 
-@st.cache_data(show_spinner="Carregando resultados da seleção de features...")
-def load_selection_artifacts():
-    try:
-        with open('selection_artifacts.pkl', 'rb') as f:
-            selection_artifacts = pickle.load(f)
-        return selection_artifacts
-    except FileNotFoundError:
-        st.error("ERRO CRÍTICO: O arquivo 'selection_artifacts.pkl' não foi encontrado. Por favor, execute o script de geração de artefatos.", icon="🚨")
-        return None
-    except Exception as e:
-        st.error(f"Erro ao carregar o arquivo de seleção de features: {e}", icon="🚨")
-        return None
+@st.cache_data(show_spinner="Executando seleção de features por importância...")
+def run_feature_selection_by_importance(_modeling_data):
+    X_train, y_train, feature_names = _modeling_data['X_train_orig'], _modeling_data['y_train_orig'], _modeling_data['processed_feature_names']
+    
+    estimator = LGBMClassifier(random_state=ProjectConfig.RANDOM_STATE_SEED, n_estimators=50, n_jobs=-1, verbose=-1)
+    estimator.fit(X_train, y_train)
+    
+    importances_df = pd.DataFrame({
+        'Feature': feature_names,
+        'Importance': estimator.feature_importances_
+    }).sort_values(by='Importance', ascending=False)
+    
+    total_importance = importances_df['Importance'].sum()
+    importances_df['Cumulative_Importance'] = importances_df['Importance'].cumsum()
+    importances_df['Cumulative_Percentage'] = importances_df['Cumulative_Importance'] / total_importance
+    
+    optimal_n_features = (importances_df['Cumulative_Percentage'] <= 0.95).sum() + 1
+    optimal_n_features = min(optimal_n_features, len(importances_df))
 
-def render_feature_selection_module():
+    top_features = importances_df.head(optimal_n_features)
+    selected_features_names = top_features['Feature'].tolist()
+
+    selected_indices = [
+        feature_names.index(f) for f in selected_features_names
+    ]
+    
+    selector_object = ManualSelector(selected_indices)
+    selector_object.fit(X_train)
+
+    selection_artifacts = {
+        'selector_object': selector_object,
+        'optimal_n_features': optimal_n_features,
+        'selected_feature_names': selected_features_names,
+        'feature_ranking_df': importances_df,
+    }
+    return selection_artifacts
+
+def render_feature_selection_module(modeling_data):
     with st.container(border=True):
         st.subheader("Etapa 2: Foco no que Importa - Seleção Automática de Features")
         st.markdown("""
-        **O Quê?** Para garantir uma experiência ágil e objetiva, carregamos o resultado de uma seleção de features pré-executada. Um modelo LightGBM foi usado para ranquear as variáveis por importância, e o critério de **importância acumulada** foi aplicado.
+        **O Quê?** Para garantir uma experiência ágil e objetiva, executamos um processo de seleção de features automático e otimizado. Um modelo LightGBM é treinado rapidamente para ranquear as variáveis por importância, e então aplicamos um critério de **importância acumulada**.
 
-        **Por quê?** Esta abordagem é **instantânea** e eficaz. O sistema carrega a lista das features que, juntas, explicam **95% do poder preditivo** do modelo, garantindo que estamos usando apenas as variáveis mais impactantes, otimizando a performance e reduzindo o ruído.
+        **Por quê?** Esta abordagem é extremamente rápida e eficaz. O sistema seleciona ao vivo o menor número de features que, juntas, explicam **95% do poder preditivo** do modelo, garantindo que estamos usando apenas as variáveis mais impactantes.
         """)
 
-        if st.button("Carregar Resultados da Seleção de Features", key="fs_button_auto"):
-            selection_artifacts = load_selection_artifacts()
+        if st.button("Executar Seleção Automática de Features", key="fs_button_auto"):
+            selection_artifacts = run_feature_selection_by_importance(modeling_data)
             if selection_artifacts:
                 st.session_state['artifacts']['selection_artifacts'] = selection_artifacts
                 st.session_state.app_stage = 'features_selected'
-                st.success("Resultados da seleção de features carregados com sucesso!")
+                st.success("Seleção automática de features concluída!")
                 st.rerun()
 
     if 'selection_artifacts' in st.session_state.get('artifacts', {}):
@@ -641,8 +665,8 @@ def render_feature_selection_module():
             artifacts = st.session_state['artifacts']['selection_artifacts']
             st.subheader("Análise Pós-Seleção")
             st.markdown("""
-            **O que aconteceu?** Os resultados foram carregados, mostrando que o sistema selecionou automaticamente as **{n_feats}** melhores, que juntas explicam 95% da importância total.
-            - **Gráfico de Importância:** O gráfico abaixo mostra o ranking pré-calculado. As features no topo são as que o modelo considerou mais decisivas para prever uma reclamação.
+            **O que aconteceu?** O modelo LightGBM ranqueou todas as features e o sistema selecionou automaticamente as **{n_feats}** melhores, que juntas explicam 95% da importância total.
+            - **Gráfico de Importância:** O gráfico abaixo mostra o ranking. As features no topo são as que o modelo considera mais decisivas para prever uma reclamação.
             - **Lista de Features:** Você pode expandir a seção para ver a lista exata de features que serão usadas na próxima etapa de modelagem.
             """.format(n_feats=artifacts['optimal_n_features']))
             
@@ -660,37 +684,58 @@ def render_feature_selection_module():
             with st.expander("Ver Lista de Features Selecionadas para a Modelagem"):
                 st.dataframe(pd.DataFrame(artifacts['selected_feature_names'], columns=["Feature Selecionada"]), use_container_width=True)
 
-import pickle
+@st.cache_data(show_spinner="Treinando modelos de baseline otimizados para velocidade...")
+def train_baseline_models(_modeling_data, _selection_artifacts):
+    X_train = _modeling_data['X_train_resampled']
+    y_train = _modeling_data['y_train_resampled']
+    X_test = _modeling_data['X_test']
+    y_test = _modeling_data['y_test']
 
-@st.cache_data(show_spinner="Carregando resultados dos modelos de baseline...")
-def load_baseline_results():
-    """Carrega os resultados pré-treinados do baseline a partir de um arquivo pickle."""
-    try:
-        with open('baseline_results.pkl', 'rb') as f:
-            baseline_results = pickle.load(f)
-        return baseline_results
-    except FileNotFoundError:
-        st.error("ERRO CRÍTICO: O arquivo 'baseline_results.pkl' não foi encontrado. Por favor, execute o script de pré-treinamento para gerá-lo.", icon="🚨")
-        return None
-    except Exception as e:
-        st.error(f"Erro ao carregar o arquivo de resultados: {e}", icon="🚨")
-        return None
+    selector = _selection_artifacts['selector_object']
+    X_train_final = selector.transform(X_train)
+    X_test_final = selector.transform(X_test)
+    
+    models_to_test = {
+        "LightGBM": LGBMClassifier(random_state=ProjectConfig.RANDOM_STATE_SEED, verbose=-1),
+        "Random Forest": RandomForestClassifier(n_estimators=100, max_depth=15, random_state=ProjectConfig.RANDOM_STATE_SEED, n_jobs=-1),
+        "Decision Tree": DecisionTreeClassifier(random_state=ProjectConfig.RANDOM_STATE_SEED),
+        "KNN": KNeighborsClassifier(n_jobs=-1)
+    }
 
-def render_baseline_modeling_module():
+    baseline_results = {}
+    for name, model in models_to_test.items():
+        model.fit(X_train_final, y_train)
+        y_pred = model.predict(X_test_final)
+        y_proba = model.predict_proba(X_test_final)[:, 1]
+        
+        baseline_results[name] = {
+            'model_object': model,
+            'metrics': {
+                'AUC': roc_auc_score(y_test, y_proba),
+                'F1-Score': f1_score(y_test, y_pred),
+                'Recall': recall_score(y_test, y_pred),
+                'Precisão': precision_score(y_test, y_pred)
+            },
+            'confusion_matrix': confusion_matrix(y_test, y_pred),
+            'full_report': classification_report(y_test, y_pred, output_dict=True),
+            'roc_curve_data': roc_curve(y_test, y_proba)
+        }
+    return baseline_results
+
+def render_baseline_modeling_module(modeling_data, selection_artifacts):
     with st.container(border=True):
         st.subheader("Etapa 3: A Competição dos Algoritmos (Baseline)")
         st.markdown("""
-        **O Quê?** Aqui começa a competição! Para garantir uma experiência de usuário instantânea, carregamos os resultados de uma competição pré-executada entre 8 diferentes algoritmos de Machine Learning. De modelos simples como Árvores de Decisão a potências como XGBoost e LightGBM, todos foram treinados na mesma base de dados para ver qual se adapta melhor ao nosso problema.
-
-        **Por quê?** Esta abordagem nos permite apresentar uma **linha de base (baseline)** de performance completa sem o tempo de espera do treinamento. Você obtém a visão geral do "campeonato" de modelos instantaneamente.
+        **O Quê?** Aqui começa a competição! Para garantir uma experiência de usuário rápida, executamos ao vivo um campeonato com um conjunto selecionado de 4 algoritmos rápidos e eficientes.
+        **Por quê?** Esta abordagem nos permite ter uma **linha de base (baseline)** de performance robusta sem um longo tempo de espera. Você obtém uma visão geral dos melhores competidores em poucos segundos para tomar as próximas decisões.
         """)
         
-        if st.button("Carregar Resultados da Competição", key="load_button"):
-            baseline_artifacts = load_baseline_results()
+        if st.button("Executar Competição de Modelos", key="train_button"):
+            baseline_artifacts = train_baseline_models(modeling_data, selection_artifacts)
             if baseline_artifacts:
                 st.session_state['artifacts']['baseline_artifacts'] = baseline_artifacts
                 st.session_state.app_stage = 'baselines_trained'
-                st.success("Resultados da competição carregados com sucesso!")
+                st.success("Competição de modelos baseline concluída com sucesso!")
                 st.rerun()
 
     if 'baseline_artifacts' in st.session_state.get('artifacts', {}):
@@ -698,7 +743,7 @@ def render_baseline_modeling_module():
             artifacts = st.session_state['artifacts']['baseline_artifacts']
             st.subheader("Análise Pós-Treinamento: O Leaderboard")
             st.markdown("""
-            **O que aconteceu?** Os resultados de 8 modelos, previamente treinados e avaliados no conjunto de teste, foram carregados. A tabela abaixo é o nosso **Leaderboard de Performance**.
+            **O que aconteceu?** Os modelos foram treinados e avaliados no conjunto de teste. A tabela abaixo é o nosso **Leaderboard de Performance**.
             
             **Como interpretar:**
             - **AUC:** A principal métrica de performance geral. Quanto maior (mais perto de 1.0), melhor o modelo consegue distinguir entre um cliente que vai reclamar e um que não vai.
@@ -716,33 +761,7 @@ def render_baseline_modeling_module():
             sorted_df = leaderboard_df.sort_values(by=sort_by, ascending=False)
             st.dataframe(sorted_df.style.background_gradient(cmap='viridis', subset=[sort_by]).format("{:.4f}"), use_container_width=True)
 
-def display_modeling_page(df):
-    st.header("Pipeline de Modelagem Preditiva", divider='rainbow')
-    st.markdown("""
-    Bem-vindo à central de Machine Learning. Nesta página, executaremos o pipeline completo, desde a preparação dos dados até o treinamento e avaliação de múltiplos modelos de classificação.
-    Cada etapa foi projetada para ser executada sequencialmente, com explicações detalhadas para que você entenda não apenas **o que** está sendo feito, mas **por que** cada decisão é crucial para o sucesso do projeto.
-    """)
-
-    if df is None or df.empty:
-        st.error("⚠️ Os dados precisam ser processados na página 'Análise do Dataset' antes de iniciar a modelagem.")
-        return
-
-    render_data_preparation_module(df)
-    
-    if 'modeling_data' in st.session_state.get('artifacts', {}):
-        render_feature_selection_module()
-    
-    if 'selection_artifacts' in st.session_state.get('artifacts', {}):
-        render_baseline_modeling_module()
-    
-    if 'baseline_artifacts' in st.session_state.get('artifacts', {}):
-        render_model_deep_dive_module(st.session_state.artifacts['baseline_artifacts'])
-    
-    if 'baseline_artifacts' in st.session_state.get('artifacts', {}):
-        render_hyperparameter_tuning_module(st.session_state.artifacts['baseline_artifacts'], st.session_state.artifacts['modeling_data'])
-        
-    if 'tuning_artifacts' in st.session_state.get('artifacts', {}):
-        render_final_model_analysis_module(st.session_state.artifacts['tuning_artifacts'], st.session_state.artifacts['modeling_data'], st.session_state.artifacts['selection_artifacts'])
+render_final_model_analysis_module(st.session_state.artifacts['tuning_artifacts'], st.session_state.artifacts['modeling_data'], st.session_state.artifacts['selection_artifacts'])
 
 def render_model_deep_dive_module(baseline_artifacts):
     st.markdown("---")
