@@ -606,9 +606,13 @@ class ManualSelector:
             raise RuntimeError("O método 'fit' deve ser chamado antes do 'transform'.")
         return X[:, self.support_]
 
-@st.cache_data(show_spinner="Executando seleção de features por importância...")
-def run_feature_selection_by_importance(_modeling_data, num_features_to_select):
-    """Executa a seleção de features baseada na importância de um modelo LightGBM."""
+# Insira este bloco no lugar das três funções que você apagou
+
+@st.cache_data(show_spinner="Executando seleção automática de features por importância...")
+def run_feature_selection_by_importance(_modeling_data):
+    """
+    Executa a seleção de features, mantendo aquelas com importância acima da média.
+    """
     X_train, y_train = _modeling_data['X_train_resampled'], _modeling_data['y_train_resampled']
     
     estimator = LGBMClassifier(random_state=ProjectConfig.RANDOM_STATE_SEED, n_jobs=-1, verbose=-1)
@@ -619,19 +623,16 @@ def run_feature_selection_by_importance(_modeling_data, num_features_to_select):
         'Importance': estimator.feature_importances_
     }).sort_values(by='Importance', ascending=False)
     
-    top_features = importances_df.head(num_features_to_select)
+    # Lógica de seleção automática: manter features com importância acima da média
+    average_importance = importances_df['Importance'].mean()
+    top_features = importances_df[importances_df['Importance'] > average_importance]
     selected_features_names = top_features['Feature'].tolist()
+    num_features_to_select = len(selected_features_names)
 
-    selected_indices = [
-        _modeling_data['processed_feature_names'].index(f) for f in selected_features_names
-    ]
-    
-    # Agora usamos a classe definida globalmente
-    selector_object = ManualSelector(selected_indices)
-    selector_object.fit(X_train) # Chama o fit para criar a máscara
+    support_mask = pd.Series(_modeling_data['processed_feature_names']).isin(selected_features_names).values
 
     selection_artifacts = {
-        'selector_object': selector_object,
+        'support_mask': support_mask,
         'optimal_n_features': num_features_to_select,
         'selected_feature_names': selected_features_names,
         'feature_ranking_df': importances_df,
@@ -640,25 +641,15 @@ def run_feature_selection_by_importance(_modeling_data, num_features_to_select):
 
 def render_feature_selection_module(modeling_data):
     with st.container(border=True):
-        st.subheader("Etapa 2: Foco no que Importa - Seleção Rápida de Features")
+        st.subheader("Etapa 2: Foco no que Importa - Seleção Automática de Features")
         st.markdown("""
-        **O Quê?** Para garantir uma experiência de usuário rápida, substituímos o lento método RFECV por uma seleção baseada em **importância de features**. Treinamos um modelo LightGBM uma única vez e pedimos a ele para ranquear as variáveis da mais à menos importante.
+        **O Quê?** Para garantir uma análise robusta e rápida, o sistema agora realiza a seleção de features de forma **automática**. Treinamos um modelo LightGBM para ranquear a importância de cada variável.
         
-        **Por quê?** Esta abordagem é extremamente rápida e eficaz. Ela nos permite identificar as variáveis com maior poder preditivo em segundos, em vez de minutos. Você pode usar o controle deslizante abaixo para definir interativamente quantas das melhores features deseja usar na modelagem.
+        **Como?** O critério de seleção é simples e poderoso: **manteremos todas as features cuja importância de predição for maior que a média.** Isso garante que apenas as variáveis mais impactantes prossigam para a fase de modelagem.
         """)
 
-        num_total_features = len(modeling_data['processed_feature_names'])
-        num_features = st.slider(
-            "Selecione quantas das features mais importantes você quer manter:",
-            min_value=5,
-            max_value=num_total_features,
-            value=min(20, num_total_features), # Sugere 20 como um bom ponto de partida
-            step=1
-        )
-        
-        if st.button("Executar Seleção Rápida de Features", key="fs_button_fast"):
-            # A execução agora é quase instantânea
-            selection_artifacts = run_feature_selection_by_importance(modeling_data, num_features)
+        if st.button("Executar Seleção Automática de Features", key="fs_button_auto", type="primary"):
+            selection_artifacts = run_feature_selection_by_importance(modeling_data)
             st.session_state['artifacts']['selection_artifacts'] = selection_artifacts
             st.session_state.app_stage = 'features_selected'
             st.success("Seleção de features concluída!")
@@ -668,231 +659,46 @@ def render_feature_selection_module(modeling_data):
         with st.container(border=True):
             artifacts = st.session_state['artifacts']['selection_artifacts']
             st.subheader("Análise Pós-Seleção")
-            st.markdown("""
-            **O que aconteceu?** O modelo LightGBM foi treinado e ranqueou todas as features pela sua importância. Selecionamos as **{n_feats}** melhores, conforme sua escolha.
-            - **Gráfico de Importância:** O gráfico abaixo mostra o ranking. As features no topo são as que o modelo considera mais decisivas para prever uma reclamação.
-            - **Lista de Features:** Você pode expandir a seção para ver a lista exata de features que serão usadas na próxima etapa de modelagem.
-            """.format(n_feats=artifacts['optimal_n_features']))
+            st.markdown(f"O sistema analisou a importância de todas as features e selecionou automaticamente as **{artifacts['optimal_n_features']}** mais relevantes (aquelas com importância acima da média).")
             
-            # Gráfico de importância das features
             ranking_df = artifacts['feature_ranking_df']
             fig = px.bar(
-                ranking_df.head(30), # Mostra as 30 melhores
-                x='Importance',
-                y='Feature',
-                orientation='h',
+                ranking_df.head(30),
+                x='Importance', y='Feature', orientation='h',
                 title="Ranking de Importância das Features (as 30 melhores)"
             )
+            fig.add_vline(x=ranking_df['Importance'].mean(), line_dash="dash", annotation_text="Importância Média", line_color="red")
             fig.update_layout(yaxis={'categoryorder':'total ascending'}, height=600)
             st.plotly_chart(fig, use_container_width=True)
 
             with st.expander("Ver Lista de Features Selecionadas para a Modelagem"):
                 st.dataframe(pd.DataFrame(artifacts['selected_feature_names'], columns=["Feature Selecionada"]), use_container_width=True)
 
-@st.cache_data(show_spinner="Treinando todos os 8 modelos de baseline... Este processo é intensivo e pode levar alguns minutos.")
-def train_all_baseline_models(_modeling_data, _selection_artifacts):
-    """Treina um portfólio de modelos e retorna seus resultados de performance."""
-    selector = _selection_artifacts['selector_object']
-    X_train_final = selector.transform(_modeling_data['X_train_resampled'])
-    y_train = _modeling_data['y_train_resampled']
-    X_test_final = selector.transform(_modeling_data['X_test'])
-    y_test = _modeling_data['y_test']
-    
-    models_to_test = {
-        "LightGBM": LGBMClassifier(random_state=ProjectConfig.RANDOM_STATE_SEED, verbose=-1),
-        "XGBoost": XGBClassifier(random_state=ProjectConfig.RANDOM_STATE_SEED, use_label_encoder=False, eval_metric='logloss', verbosity=0),
-        "Random Forest": RandomForestClassifier(random_state=ProjectConfig.RANDOM_STATE_SEED),
-        "Gradient Boosting": GradientBoostingClassifier(random_state=ProjectConfig.RANDOM_STATE_SEED),
-        "SVC": SVC(probability=True, random_state=ProjectConfig.RANDOM_STATE_SEED),
-        "AdaBoost": AdaBoostClassifier(random_state=ProjectConfig.RANDOM_STATE_SEED),
-        "Decision Tree": DecisionTreeClassifier(random_state=ProjectConfig.RANDOM_STATE_SEED),
-        "KNN": KNeighborsClassifier(),
-    }
-    
-    baseline_results = {}
-    for name, model in models_to_test.items():
-        start_time = time.time()
-        model.fit(X_train_final, y_train)
-        y_pred = model.predict(X_test_final)
-        y_proba = model.predict_proba(X_test_final)[:, 1]
-        end_time = time.time()
-        
-        metrics = {
-            'AUC': roc_auc_score(y_test, y_proba),
-            'Recall': recall_score(y_test, y_pred),
-            'Precisão': precision_score(y_test, y_pred),
-            'F1-Score': f1_score(y_test, y_pred),
-            'MCC': matthews_corrcoef(y_test, y_pred),
-            'Tempo de Treino (s)': end_time - start_time
-        }
-        
-        baseline_results[name] = {
-            'model_object': model, 'metrics': metrics,
-            'full_report': classification_report(y_test, y_pred, output_dict=True, target_names=['Não Reclamou', 'Reclamou']),
-            'confusion_matrix': confusion_matrix(y_test, y_pred),
-            'roc_curve_data': roc_curve(y_test, y_proba)
-        }
-    return baseline_results
-
-def render_baseline_modeling_module(modeling_data, selection_artifacts):
-    with st.container(border=True):
-        st.subheader("Etapa 3: A Competição dos Algoritmos (Baseline)")
-        st.markdown("""
-        **O Quê?** Agora começa a parte divertida! Pegamos nossas features selecionadas e promovemos uma competição entre 8 diferentes algoritmos de Machine Learning. De modelos mais simples como Árvores de Decisão a potências como XGBoost e LightGBM, todos são treinados na mesma base de dados para ver qual se adapta melhor ao nosso problema.
-
-        **Por quê?** Essa abordagem de "campeonato" nos permite estabelecer uma **linha de base (baseline)** de performance. Em vez de apostar em um único algoritmo, testamos vários para identificar objetivamente quais são os mais promissores. Os modelos com melhor desempenho aqui serão os candidatos para a fase de otimização fina.
-        """)
-        
-        if st.button("Iniciar Treinamento em Lote", key="train_button"):
-            baseline_artifacts = train_all_baseline_models(modeling_data, selection_artifacts)
-            st.session_state['artifacts']['baseline_artifacts'] = baseline_artifacts
-            st.session_state.app_stage = 'baselines_trained'
-            st.success("Treinamento em lote concluído!")
-            st.rerun()
-
-    if 'baseline_artifacts' in st.session_state.get('artifacts', {}):
-        with st.container(border=True):
-            artifacts = st.session_state['artifacts']['baseline_artifacts']
-            st.subheader("Análise Pós-Treinamento: O Leaderboard")
-            st.markdown("""
-            **O que aconteceu?** Todos os 8 modelos foram treinados e avaliados no conjunto de teste. A tabela abaixo é o nosso **Leaderboard de Performance**.
-            
-            **Como interpretar:**
-            - **AUC:** A principal métrica de performance geral. Quanto maior (mais perto de 1.0), melhor o modelo consegue distinguir entre um cliente que vai reclamar e um que não vai.
-            - **Recall:** Extremamente importante para o negócio! Indica a porcentagem de clientes que **realmente reclamaram** e que o modelo conseguiu identificar corretamente. Um Recall alto significa que estamos deixando poucos "reclamões" passarem despercebidos.
-            - **Precisão:** Dos clientes que o modelo **disse que iriam reclamar**, quantos de fato reclamaram.
-            - **F1-Score:** Uma média harmônica entre Precisão e Recall. Útil para um balanço geral.
-            
-            **Próximo Passo:** Explore o leaderboard (você pode ordenar clicando no nome da coluna) para identificar os modelos campeões. A seguir, vamos mergulhar em uma análise mais profunda de cada um deles e depois otimizar os melhores.
-            """)
-            
-            leaderboard_data = [{'Modelo': name, **res['metrics']} for name, res in artifacts.items()]
-            leaderboard_df = pd.DataFrame(leaderboard_data).set_index('Modelo')
-            
-            sort_by = st.selectbox("Ordenar leaderboard por:", leaderboard_df.columns, index=0)
-            sorted_df = leaderboard_df.sort_values(by=sort_by, ascending=False)
-            st.dataframe(sorted_df.style.background_gradient(cmap='viridis', subset=[sort_by]).format("{:.4f}"), use_container_width=True)
-
-def display_modeling_page(df):
-    st.header("Pipeline de Modelagem Preditiva", divider='rainbow')
-    st.markdown("""
-    Bem-vindo à central de Machine Learning. Nesta página, executaremos o pipeline completo, desde a preparação dos dados até o treinamento e avaliação de múltiplos modelos de classificação.
-    Cada etapa foi projetada para ser executada sequencialmente, com explicações detalhadas para que você entenda não apenas **o que** está sendo feito, mas **por que** cada decisão é crucial para o sucesso do projeto.
-    """)
-
-    if df is None or df.empty:
-        st.error("⚠️ Os dados precisam ser processados na página 'Análise do Dataset' antes de iniciar a modelagem.")
-        return
-
-    # Módulo 1: Preparação dos Dados
-    render_data_preparation_module(df)
-    
-    # Módulo 2: Seleção de Features (só aparece se a etapa 1 foi concluída)
-    if 'modeling_data' in st.session_state.get('artifacts', {}):
-        render_feature_selection_module(st.session_state.artifacts['modeling_data'])
-    
-    # Módulo 3: Treinamento de Baseline (só aparece se a etapa 2 foi concluída)
-    if 'selection_artifacts' in st.session_state.get('artifacts', {}):
-        render_baseline_modeling_module(st.session_state.artifacts['modeling_data'], st.session_state.artifacts['selection_artifacts'])
-    
-    # Módulo 4: Análise Detalhada dos Modelos (só aparece se a etapa 3 foi concluída)
-    if 'baseline_artifacts' in st.session_state.get('artifacts', {}):
-        render_model_deep_dive_module(st.session_state.artifacts['baseline_artifacts'])
-    
-    # Módulo 5: Otimização de Hiperparâmetros (só aparece se a etapa 3 foi concluída)
-    if 'baseline_artifacts' in st.session_state.get('artifacts', {}):
-        render_hyperparameter_tuning_module(st.session_state.artifacts['baseline_artifacts'], st.session_state.artifacts['modeling_data'])
-        
-    # Módulo 6: Análise do Modelo Final (só aparece se a etapa 5 foi concluída)
-    if 'tuning_artifacts' in st.session_state.get('artifacts', {}):
-        render_final_model_analysis_module(st.session_state.artifacts['tuning_artifacts'], st.session_state.artifacts['modeling_data'], st.session_state.artifacts['selection_artifacts'])
-
-def render_model_deep_dive_module(baseline_artifacts):
-    st.markdown("---")
-    with st.container(border=True):
-        st.subheader("Etapa 4: Análise Profunda dos Competidores")
-        st.markdown("""
-        **O Quê?** Agora, damos um "zoom" em cada modelo do leaderboard. Esta seção permite que você investigue a performance de qualquer um dos algoritmos individualmente.
-        
-        **Por quê?** Entender *como* um modelo acerta e erra é tão importante quanto sua pontuação final. Analisaremos:
-        - **Matriz de Confusão:** Um mapa dos acertos e erros. O erro mais crítico para nós é o **Falso Negativo**: quando o modelo prevê "Não Reclama" para um cliente que, na verdade, reclama. Esse é o cliente insatisfeito que não conseguimos identificar.
-        - **Curva ROC:** Um gráfico que mostra a habilidade do modelo em separar as classes. Quanto mais a curva se aproxima do canto superior esquerdo, melhor.
-        - **Importância de Features:** Revela quais variáveis cada modelo específico considerou mais importantes. Isso nos dá as primeiras pistas sobre o "porquê" por trás das previsões.
-        """)
-        
-        model_to_inspect = st.selectbox(
-            "Selecione um modelo do leaderboard para uma análise detalhada:",
-            options=baseline_artifacts.keys()
-        )
-        
-        if model_to_inspect:
-            model_data = baseline_artifacts[model_to_inspect]
-            metrics = model_data['metrics']
-            
-            st.markdown(f"##### Métricas de Performance para o Modelo **{model_to_inspect}**")
-            metric_cols = st.columns(4)
-            metric_cols[0].metric("AUC", f"{metrics['AUC']:.4f}")
-            metric_cols[1].metric("Recall", f"{metrics['Recall']:.4f}", help="Dos clientes que reclamaram, quantos o modelo pegou?")
-            metric_cols[2].metric("Precisão", f"{metrics['Precisão']:.4f}", help="Dos clientes que o modelo disse que reclamariam, quantos realmente reclamaram?")
-            metric_cols[3].metric("F1-Score", f"{metrics['F1-Score']:.4f}")
-
-            tab_cm, tab_roc, tab_report, tab_importance = st.tabs(["Matriz de Confusão", "Curva ROC", "Relatório Completo", "Importância de Features"])
-
-            with tab_cm:
-                cm = model_data['confusion_matrix']
-                fig_cm = px.imshow(
-                    cm, text_auto=True, aspect="auto",
-                    labels=dict(x="Valores Previstos pelo Modelo", y="Valores Reais"),
-                    x=['Não Reclamou', 'Reclamou'], y=['Não Reclamou', 'Reclamou'],
-                    title=f"Matriz de Confusão para {model_to_inspect}",
-                    color_continuous_scale='Blues'
-                )
-                fig_cm.update_layout(coloraxis_showscale=False)
-                st.plotly_chart(fig_cm, use_container_width=True)
-                st.info(f"O modelo identificou corretamente **{cm[1,1]}** clientes que reclamaram (Verdadeiros Positivos), mas falhou em identificar **{cm[1,0]}** (Falsos Negativos).")
-
-
-            with tab_roc:
-                fpr, tpr, _ = model_data['roc_curve_data']
-                fig_roc = go.Figure()
-                fig_roc.add_trace(go.Scatter(x=fpr, y=tpr, mode='lines', name=f'AUC = {metrics["AUC"]:.3f}', line=dict(width=4)))
-                fig_roc.add_trace(go.Scatter(x=[0, 1], y=[0, 1], mode='lines', line=dict(dash='dash'), name='Performance Aleatória'))
-                fig_roc.update_layout(title=f"Curva ROC para {model_to_inspect}", xaxis_title='Taxa de Falsos Positivos', yaxis_title='Taxa de Verdadeiros Positivos')
-                st.plotly_chart(fig_roc, use_container_width=True)
-
-            with tab_report:
-                st.dataframe(pd.DataFrame(model_data['full_report']).transpose().style.format("{:.3f}"))
-
-            with tab_importance:
-                model_object = model_data['model_object']
-                if hasattr(model_object, 'feature_importances_'):
-                    feature_names = st.session_state['artifacts']['selection_artifacts']['selected_feature_names']
-                    importance_df = pd.DataFrame({'Feature': feature_names, 'Importância': model_object.feature_importances_})
-                    importance_df = importance_df.sort_values(by='Importância', ascending=True)
-                    
-                    fig_imp = px.bar(importance_df.tail(15), x='Importância', y='Feature', orientation='h', title=f"Top 15 Features Mais Importantes ({model_to_inspect})")
-                    fig_imp.update_layout(height=500)
-                    st.plotly_chart(fig_imp, use_container_width=True)
-                else:
-                    st.info(f"O modelo '{model_to_inspect}' não possui um atributo '.feature_importances_' para análise direta de importância (ex: SVM com kernel não-linear).")
-
-
 @st.cache_data(show_spinner="Executando busca em grade para otimização de hiperparâmetros...")
 def run_hyperparameter_tuning(_baseline_artifacts, _modeling_data, top_n_models):
-    """Executa GridSearchCV nos N melhores modelos do baseline."""
-    X_train_final = st.session_state['artifacts']['selection_artifacts']['selector_object'].transform(_modeling_data['X_train_resampled'])
-    y_train = _modeling_data['y_train_resampled']
-    
-    leaderboard_df = pd.DataFrame([{'Modelo': name, 'AUC': res['metrics']['AUC']} for name, res in _baseline_artifacts.items()]).set_index('Modelo').sort_values(by='AUC', ascending=False)
-    models_to_tune = leaderboard_df.head(top_n_models).index.tolist()
-    
+    """Executa GridSearchCV nos N melhores modelos do baseline que possuem uma grade de parâmetros definida."""
     param_grids = {
-        "LightGBM": {'n_estimators': [100, 200, 300], 'learning_rate': [0.01, 0.05, 0.1], 'num_leaves': [20, 31, 40]},
-        "XGBoost": {'n_estimators': [100, 200, 300], 'learning_rate': [0.01, 0.05, 0.1], 'max_depth': [3, 5, 7]},
-        "Random Forest": {'n_estimators': [100, 200], 'max_depth': [10, 20, None], 'min_samples_leaf': [1, 2, 4]},
-        "Gradient Boosting": {'n_estimators': [100, 200], 'learning_rate': [0.05, 0.1], 'max_depth': [3, 5]},
-        "SVC": {'C': [1, 10, 50], 'gamma': ['scale', 'auto'], 'kernel': ['rbf']}
+        "LightGBM": {'n_estimators': [100, 200], 'learning_rate': [0.05, 0.1], 'num_leaves': [20, 31]},
+        "XGBoost": {'n_estimators': [100, 200], 'learning_rate': [0.05, 0.1], 'max_depth': [3, 5]},
+        "Random Forest": {'n_estimators': [100, 200], 'max_depth': [10, 20], 'min_samples_leaf': [2, 4]},
+        "Gradient Boosting": {'n_estimators': [100, 200], 'learning_rate': [0.05, 0.1], 'max_depth': [3]},
+        "SVC": {'C': [1, 10], 'gamma': ['scale'], 'kernel': ['rbf']}
     }
+    
+    leaderboard_df = pd.DataFrame([{'Modelo': name, 'AUC': res['metrics']['AUC']} for name, res in _baseline_artifacts.items()]).set_index('Modelo')
+    
+    # CORREÇÃO DO ERRO: Filtra o leaderboard para conter apenas os modelos para os quais temos uma grade de parâmetros.
+    models_available_for_tuning = leaderboard_df[leaderboard_df.index.isin(param_grids.keys())]
+    
+    # Seleciona os N melhores da lista JÁ FILTRADA.
+    models_to_tune = models_available_for_tuning.sort_values(by='AUC', ascending=False).head(top_n_models).index.tolist()
+
+    if not models_to_tune:
+        st.warning("Nenhum dos melhores modelos do baseline está na lista de modelos otimizáveis. A otimização será pulada.")
+        return {}
+
+    X_train_final = _modeling_data['X_train_resampled'][:, st.session_state['artifacts']['selection_artifacts']['support_mask']]
+    y_train = _modeling_data['y_train_resampled']
     
     model_initializers = {
         "LightGBM": LGBMClassifier(random_state=ProjectConfig.RANDOM_STATE_SEED, verbose=-1),
@@ -904,11 +710,10 @@ def run_hyperparameter_tuning(_baseline_artifacts, _modeling_data, top_n_models)
 
     tuning_results = {}
     for model_name in models_to_tune:
-        if model_name in param_grids:
-            base_model = model_initializers[model_name]
-            grid_search = GridSearchCV(estimator=base_model, param_grid=param_grids[model_name], cv=3, scoring='roc_auc', n_jobs=-1, verbose=1)
-            grid_search.fit(X_train_final, y_train)
-            tuning_results[model_name] = {'best_estimator': grid_search.best_estimator_, 'best_params': grid_search.best_params_, 'best_score_cv': grid_search.best_score_}
+        base_model = model_initializers[model_name]
+        grid_search = GridSearchCV(estimator=base_model, param_grid=param_grids[model_name], cv=3, scoring='roc_auc', n_jobs=-1, verbose=1)
+        grid_search.fit(X_train_final, y_train)
+        tuning_results[model_name] = {'best_estimator': grid_search.best_estimator_, 'best_params': grid_search.best_params_, 'best_score_cv': grid_search.best_score_}
     return tuning_results
 
 def render_hyperparameter_tuning_module(baseline_artifacts, modeling_data):
