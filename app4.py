@@ -1294,10 +1294,6 @@ def display_modeling_page(df):
         render_final_model_analysis_module(st.session_state.artifacts['tuning_artifacts'], st.session_state.artifacts['modeling_data'], st.session_state.artifacts['selection_artifacts'])
 
 def main():
-    """
-    Função principal que orquestra a navegação e a renderização de todas as páginas
-    e módulos da aplicação Streamlit.
-    """
     st.sidebar.title("Navegação Principal 🚀")
     st.sidebar.markdown("Selecione a página que deseja visualizar:")
     
@@ -1323,7 +1319,6 @@ def main():
         unsafe_allow_html=True
     )
 
-    # ---- Lógica de Renderização de Páginas ----
     if page_selection == "Página Inicial":
         display_home_page()
 
@@ -1334,38 +1329,31 @@ def main():
         display_eda_page()
     
     elif page_selection == "Modelagem e Avaliação":
-        display_modeling_page(st.session_state['processed_df'])
+        display_modeling_page(st.session_state.get('processed_df'))
 
     elif page_selection == "Análise Avançada e de Negócio":
-        if st.session_state.get('app_stage') == 'final_model_selected':
-            st.header("Análise Avançada e de Negócio", anchor=False, divider='rainbow')
-            
-            # Re-calcula os artefatos SHAP se ainda não existirem para esta sessão
-            if 'shap_artifacts' not in st.session_state.get('artifacts', {}):
-                 st.session_state['artifacts']['shap_artifacts'] = calculate_global_shap_values(
-                     st.session_state['artifacts']['final_model_artifacts'], 
-                     st.session_state['artifacts']['modeling_data'], 
-                     st.session_state['artifacts']['selection_artifacts']
-                 )
+        st.header("Análise Avançada e de Negócio", divider='rainbow')
 
-            # Estrutura de abas para organizar a página avançada
-            tab_xai, tab_roi, tab_export = st.tabs(["🤖 Interpretabilidade (XAI)", "📈 Simulação de ROI", "📤 Exportar"])
+        if 'final_artifacts' not in st.session_state.get('artifacts', {}):
+            st.error("⚠️ Por favor, complete a Etapa 6 na aba 'Modelagem e Avaliação' primeiro para gerar os artefatos do modelo final.", icon="🚨")
+            st.warning("É necessário clicar no botão 'Analisar Modelo Campeão e Gerar Explicações' para prosseguir.")
+        else:
+            final_artifacts = st.session_state.artifacts['final_artifacts']
+            
+            tab_xai, tab_roi, tab_export = st.tabs(["🤖 Interpretabilidade (XAI)", "📈 Simulação de ROI", "📤 Exportar Resultados"])
             
             with tab_xai:
-                render_global_xai_module(st.session_state['artifacts']['final_model_artifacts'], st.session_state['artifacts']['modeling_data'], st.session_state['artifacts']['selection_artifacts'])
-                render_local_xai_module(st.session_state['artifacts']['final_model_artifacts'], st.session_state['artifacts']['modeling_data'], st.session_state['artifacts']['selection_artifacts'])
+                render_global_xai_module(final_artifacts)
+                render_local_xai_module(final_artifacts, st.session_state.artifacts['modeling_data'], st.session_state.artifacts['selection_artifacts'])
             
             with tab_roi:
-                render_business_impact_module(st.session_state['artifacts']['final_model_artifacts'], st.session_state['artifacts']['modeling_data'])
+                render_business_impact_module(final_artifacts)
                 
             with tab_export:
-                render_export_module(st.session_state['artifacts']['final_model_artifacts'], st.session_state['artifacts']['selection_artifacts'], st.session_state['processed_df'])
-        else:
-            st.warning("Por favor, execute todo o pipeline de modelagem na página 'Modelagem e Avaliação' para acessar esta seção.")
+                render_export_module(final_artifacts, st.session_state.artifacts['selection_artifacts'], st.session_state.get('processed_df'))
     
     elif page_selection == "Documentação do Projeto":
         render_documentation_page()
         
-# Ponto de entrada da aplicação
 if __name__ == "__main__":
     main()
