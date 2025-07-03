@@ -609,9 +609,9 @@ class ManualSelector:
 @st.cache_data(show_spinner="Executando seleção de features por importância...")
 def run_feature_selection_by_importance(_modeling_data):
     """Executa a seleção de features baseada na importância de um modelo LightGBM."""
-    X_train, y_train = _modeling_data['X_train_resampled'], _modeling_data['y_train_resampled']
+    X_train, y_train = _modeling_data['X_train_orig'], _modeling_data['y_train_orig']
     
-    estimator = LGBMClassifier(random_state=ProjectConfig.RANDOM_STATE_SEED, n_jobs=-1, verbose=-1)
+    estimator = LGBMClassifier(random_state=ProjectConfig.RANDOM_STATE_SEED, n_estimators=50, n_jobs=-1, verbose=-1)
     estimator.fit(X_train, y_train)
     
     importances_df = pd.DataFrame({
