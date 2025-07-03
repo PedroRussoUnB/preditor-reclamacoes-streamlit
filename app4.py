@@ -607,7 +607,7 @@ class ManualSelector:
         return X[:, self.support_]
 
 @st.cache_data(show_spinner="Executando seleção de features por importância...")
-def run_feature_selection_by_importance(_modeling_data, num_features_to_select):
+def run_feature_selection_by_importance(_modeling_data):
     """Executa a seleção de features baseada na importância de um modelo LightGBM."""
     X_train, y_train = _modeling_data['X_train_resampled'], _modeling_data['y_train_resampled']
     
@@ -619,20 +619,26 @@ def run_feature_selection_by_importance(_modeling_data, num_features_to_select):
         'Importance': estimator.feature_importances_
     }).sort_values(by='Importance', ascending=False)
     
-    top_features = importances_df.head(num_features_to_select)
+    total_importance = importances_df['Importance'].sum()
+    importances_df['Cumulative_Importance'] = importances_df['Importance'].cumsum()
+    importances_df['Cumulative_Percentage'] = importances_df['Cumulative_Importance'] / total_importance
+    
+    optimal_n_features = (importances_df['Cumulative_Percentage'] <= 0.95).sum() + 1
+    optimal_n_features = min(optimal_n_features, len(importances_df))
+
+    top_features = importances_df.head(optimal_n_features)
     selected_features_names = top_features['Feature'].tolist()
 
     selected_indices = [
         _modeling_data['processed_feature_names'].index(f) for f in selected_features_names
     ]
     
-    # Agora usamos a classe definida globalmente
     selector_object = ManualSelector(selected_indices)
-    selector_object.fit(X_train) # Chama o fit para criar a máscara
+    selector_object.fit(X_train)
 
     selection_artifacts = {
         'selector_object': selector_object,
-        'optimal_n_features': num_features_to_select,
+        'optimal_n_features': optimal_n_features,
         'selected_feature_names': selected_features_names,
         'feature_ranking_df': importances_df,
     }
@@ -640,28 +646,18 @@ def run_feature_selection_by_importance(_modeling_data, num_features_to_select):
 
 def render_feature_selection_module(modeling_data):
     with st.container(border=True):
-        st.subheader("Etapa 2: Foco no que Importa - Seleção Rápida de Features")
+        st.subheader("Etapa 2: Foco no que Importa - Seleção Automática de Features")
         st.markdown("""
-        **O Quê?** Para garantir uma experiência de usuário rápida, substituímos o lento método RFECV por uma seleção baseada em **importância de features**. Treinamos um modelo LightGBM uma única vez e pedimos a ele para ranquear as variáveis da mais à menos importante.
-        
-        **Por quê?** Esta abordagem é extremamente rápida e eficaz. Ela nos permite identificar as variáveis com maior poder preditivo em segundos, em vez de minutos. Você pode usar o controle deslizante abaixo para definir interativamente quantas das melhores features deseja usar na modelagem.
+        **O Quê?** Para garantir uma experiência ágil e objetiva, o sistema agora seleciona as features mais importantes de forma automática. Treinamos um modelo LightGBM e o usamos para ranquear as variáveis. Em seguida, aplicamos um critério de **importância acumulada**.
+
+        **Por quê?** Esta abordagem é extremamente rápida e eficaz. O sistema seleciona o menor número de features que, juntas, explicam **95% do poder preditivo** do modelo. Isso elimina a necessidade de ajuste manual e garante que estamos usando apenas as variáveis mais impactantes, otimizando a performance e reduzindo o ruído.
         """)
 
-        num_total_features = len(modeling_data['processed_feature_names'])
-        num_features = st.slider(
-            "Selecione quantas das features mais importantes você quer manter:",
-            min_value=5,
-            max_value=num_total_features,
-            value=min(20, num_total_features), # Sugere 20 como um bom ponto de partida
-            step=1
-        )
-        
-        if st.button("Executar Seleção Rápida de Features", key="fs_button_fast"):
-            # A execução agora é quase instantânea
-            selection_artifacts = run_feature_selection_by_importance(modeling_data, num_features)
+        if st.button("Executar Seleção Automática de Features", key="fs_button_auto"):
+            selection_artifacts = run_feature_selection_by_importance(modeling_data)
             st.session_state['artifacts']['selection_artifacts'] = selection_artifacts
             st.session_state.app_stage = 'features_selected'
-            st.success("Seleção de features concluída!")
+            st.success("Seleção automática de features concluída!")
             st.rerun()
 
     if 'selection_artifacts' in st.session_state.get('artifacts', {}):
@@ -669,15 +665,14 @@ def render_feature_selection_module(modeling_data):
             artifacts = st.session_state['artifacts']['selection_artifacts']
             st.subheader("Análise Pós-Seleção")
             st.markdown("""
-            **O que aconteceu?** O modelo LightGBM foi treinado e ranqueou todas as features pela sua importância. Selecionamos as **{n_feats}** melhores, conforme sua escolha.
+            **O que aconteceu?** O modelo LightGBM ranqueou todas as features e o sistema selecionou automaticamente as **{n_feats}** melhores, que juntas explicam 95% da importância total.
             - **Gráfico de Importância:** O gráfico abaixo mostra o ranking. As features no topo são as que o modelo considera mais decisivas para prever uma reclamação.
             - **Lista de Features:** Você pode expandir a seção para ver a lista exata de features que serão usadas na próxima etapa de modelagem.
             """.format(n_feats=artifacts['optimal_n_features']))
             
-            # Gráfico de importância das features
             ranking_df = artifacts['feature_ranking_df']
             fig = px.bar(
-                ranking_df.head(30), # Mostra as 30 melhores
+                ranking_df.head(30),
                 x='Importance',
                 y='Feature',
                 orientation='h',
@@ -954,10 +949,12 @@ def render_hyperparameter_tuning_module(baseline_artifacts, modeling_data):
                 with col2:
                     st.write("**Melhores Parâmetros Encontrados:**")
                     st.json(results['best_params'])
-
 @st.cache_data
 def select_and_evaluate_final_model(_tuning_artifacts, _modeling_data, _selection_artifacts):
     """Seleciona o melhor modelo após o tuning e realiza uma avaliação final completa."""
+    if not _tuning_artifacts:
+        return None
+
     best_model_name = max(_tuning_artifacts, key=lambda k: _tuning_artifacts[k]['best_score_cv'])
     final_model = _tuning_artifacts[best_model_name]['best_estimator']
     
@@ -994,10 +991,17 @@ def render_final_model_analysis_module(tuning_artifacts, modeling_data, selectio
 
         if st.button("Selecionar e Analisar Modelo Campeão", key="final_model_button", type='primary'):
             final_model_artifacts = select_and_evaluate_final_model(tuning_artifacts, modeling_data, selection_artifacts)
-            st.session_state['artifacts']['final_model_artifacts'] = final_model_artifacts
-            st.session_state.app_stage = 'final_model_selected'
-            st.success("Análise do modelo final concluída!")
-            st.rerun()
+            
+            if final_model_artifacts is None:
+                st.error(
+                    "**Nenhum modelo foi otimizado.** Isso pode acontecer se os modelos de melhor performance no baseline (ex: KNN, Decision Tree) não estavam na lista para otimização. Por favor, volte à Etapa 5 e selecione um número maior de modelos para otimizar, garantindo que modelos como LightGBM ou XGBoost sejam incluídos.",
+                    icon="⚠️"
+                )
+            else:
+                st.session_state['artifacts']['final_model_artifacts'] = final_model_artifacts
+                st.session_state.app_stage = 'final_model_selected'
+                st.success("Análise do modelo final concluída!")
+                st.rerun()
 
     if 'final_model_artifacts' in st.session_state.get('artifacts', {}):
         with st.container(border=True):
