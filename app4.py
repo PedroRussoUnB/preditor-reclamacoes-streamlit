@@ -753,27 +753,20 @@ def display_modeling_page(df):
         st.error("⚠️ Os dados precisam ser processados na página 'Análise do Dataset' antes de iniciar a modelagem.")
         return
 
-    # Módulo 1: Preparação dos Dados
     render_data_preparation_module(df)
     
-    # Módulo 2: Seleção de Features (só aparece se a etapa 1 foi concluída)
     if 'modeling_data' in st.session_state.get('artifacts', {}):
         render_feature_selection_module(st.session_state.artifacts['modeling_data'])
     
-    # Módulo 3: Treinamento de Baseline (só aparece se a etapa 2 foi concluída)
     if 'selection_artifacts' in st.session_state.get('artifacts', {}):
-
-render_baseline_modeling_module()
+        render_baseline_modeling_module()
     
-    # Módulo 4: Análise Detalhada dos Modelos (só aparece se a etapa 3 foi concluída)
     if 'baseline_artifacts' in st.session_state.get('artifacts', {}):
         render_model_deep_dive_module(st.session_state.artifacts['baseline_artifacts'])
     
-    # Módulo 5: Otimização de Hiperparâmetros (só aparece se a etapa 3 foi concluída)
     if 'baseline_artifacts' in st.session_state.get('artifacts', {}):
         render_hyperparameter_tuning_module(st.session_state.artifacts['baseline_artifacts'], st.session_state.artifacts['modeling_data'])
         
-    # Módulo 6: Análise do Modelo Final (só aparece se a etapa 5 foi concluída)
     if 'tuning_artifacts' in st.session_state.get('artifacts', {}):
         render_final_model_analysis_module(st.session_state.artifacts['tuning_artifacts'], st.session_state.artifacts['modeling_data'], st.session_state.artifacts['selection_artifacts'])
 
