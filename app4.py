@@ -606,21 +606,26 @@ class ManualSelector:
             raise RuntimeError("O método 'fit' deve ser chamado antes do 'transform'.")
         return X[:, self.support_]
 
-@st.cache_data(show_spinner="Executando seleção de features por importância...")
-def run_feature_selection_by_importance(_modeling_data):
+from sklearn.feature_selection import f_classif
+
+@st.cache_data(show_spinner="Executando análise estatística para seleção de features...")
+def run_feature_selection_by_statistic(_modeling_data):
     X_train, y_train, feature_names = _modeling_data['X_train_orig'], _modeling_data['y_train_orig'], _modeling_data['processed_feature_names']
     
-    estimator = LGBMClassifier(random_state=ProjectConfig.RANDOM_STATE_SEED, n_estimators=50, n_jobs=-1, verbose=-1)
-    estimator.fit(X_train, y_train)
+    f_scores, _ = f_classif(X_train, y_train)
+    f_scores = np.nan_to_num(f_scores)
     
     importances_df = pd.DataFrame({
         'Feature': feature_names,
-        'Importance': estimator.feature_importances_
-    }).sort_values(by='Importance', ascending=False)
+        'Score_F': f_scores
+    }).sort_values(by='Score_F', ascending=False)
     
-    total_importance = importances_df['Importance'].sum()
-    importances_df['Cumulative_Importance'] = importances_df['Importance'].cumsum()
-    importances_df['Cumulative_Percentage'] = importances_df['Cumulative_Importance'] / total_importance
+    total_score = importances_df['Score_F'].sum()
+    if total_score == 0:
+        return None 
+        
+    importances_df['Cumulative_Score'] = importances_df['Score_F'].cumsum()
+    importances_df['Cumulative_Percentage'] = importances_df['Cumulative_Score'] / total_score
     
     optimal_n_features = (importances_df['Cumulative_Percentage'] <= 0.95).sum() + 1
     optimal_n_features = min(optimal_n_features, len(importances_df))
@@ -645,19 +650,19 @@ def run_feature_selection_by_importance(_modeling_data):
 
 def render_feature_selection_module(modeling_data):
     with st.container(border=True):
-        st.subheader("Etapa 2: Foco no que Importa - Seleção Automática de Features")
+        st.subheader("Etapa 2: Foco no que Importa - Seleção Estatística de Features")
         st.markdown("""
-        **O Quê?** Para garantir uma experiência ágil e objetiva, executamos um processo de seleção de features automático e otimizado. Um modelo LightGBM é treinado rapidamente para ranquear as variáveis por importância, e então aplicamos um critério de **importância acumulada**.
+        **O Quê?** Para garantir uma experiência instantânea, executamos um processo de seleção de features ultrarrápido baseado em **testes estatísticos (Teste F ANOVA)**. Este método avalia a capacidade de cada variável de distinguir, sozinha, entre clientes que reclamam e os que não reclamam.
 
-        **Por quê?** Esta abordagem é extremamente rápida e eficaz. O sistema seleciona ao vivo o menor número de features que, juntas, explicam **95% do poder preditivo** do modelo, garantindo que estamos usando apenas as variáveis mais impactantes.
+        **Por quê?** Esta abordagem é matematicamente direta e não exige o treinamento de um modelo de machine learning, eliminando o consumo intensivo de CPU e memória. Ela seleciona as features com maior poder de separação estatística, garantindo uma performance excelente do aplicativo.
         """)
 
-        if st.button("Executar Seleção Automática de Features", key="fs_button_auto"):
-            selection_artifacts = run_feature_selection_by_importance(modeling_data)
+        if st.button("Executar Seleção Estatística de Features", key="fs_button_stat"):
+            selection_artifacts = run_feature_selection_by_statistic(modeling_data)
             if selection_artifacts:
                 st.session_state['artifacts']['selection_artifacts'] = selection_artifacts
                 st.session_state.app_stage = 'features_selected'
-                st.success("Seleção automática de features concluída!")
+                st.success("Seleção estatística de features concluída!")
                 st.rerun()
 
     if 'selection_artifacts' in st.session_state.get('artifacts', {}):
@@ -665,18 +670,18 @@ def render_feature_selection_module(modeling_data):
             artifacts = st.session_state['artifacts']['selection_artifacts']
             st.subheader("Análise Pós-Seleção")
             st.markdown("""
-            **O que aconteceu?** O modelo LightGBM ranqueou todas as features e o sistema selecionou automaticamente as **{n_feats}** melhores, que juntas explicam 95% da importância total.
-            - **Gráfico de Importância:** O gráfico abaixo mostra o ranking. As features no topo são as que o modelo considera mais decisivas para prever uma reclamação.
+            **O que aconteceu?** O sistema calculou a pontuação estatística (Score F) para todas as features e selecionou automaticamente as **{n_feats}** melhores, que juntas explicam 95% da pontuação total.
+            - **Gráfico de Relevância:** O gráfico abaixo mostra o ranking. As features no topo são as que possuem a maior relevância estatística para prever uma reclamação.
             - **Lista de Features:** Você pode expandir a seção para ver a lista exata de features que serão usadas na próxima etapa de modelagem.
             """.format(n_feats=artifacts['optimal_n_features']))
             
             ranking_df = artifacts['feature_ranking_df']
             fig = px.bar(
                 ranking_df.head(30),
-                x='Importance',
+                x='Score_F',
                 y='Feature',
                 orientation='h',
-                title="Ranking de Importância das Features (as 30 melhores)"
+                title="Ranking de Relevância Estatística das Features (Score F)"
             )
             fig.update_layout(yaxis={'categoryorder':'total ascending'}, height=600)
             st.plotly_chart(fig, use_container_width=True)
@@ -918,10 +923,8 @@ def render_hyperparameter_tuning_module(baseline_artifacts, modeling_data):
                 with col2:
                     st.write("**Melhores Parâmetros Encontrados:**")
                     st.json(results['best_params'])
-
-@st.cache_data
-def select_and_evaluate_final_model(_tuning_artifacts, _modeling_data, _selection_artifacts):
-    """Seleciona o melhor modelo após o tuning e realiza uma avaliação final completa."""
+@st.cache_data(show_spinner="Finalizando modelo campeão e calculando explicações SHAP...")
+def finalize_and_explain_model(_tuning_artifacts, _modeling_data, _selection_artifacts):
     if not _tuning_artifacts:
         return None
 
@@ -931,17 +934,26 @@ def select_and_evaluate_final_model(_tuning_artifacts, _modeling_data, _selectio
     X_test_final = _selection_artifacts['selector_object'].transform(_modeling_data['X_test'])
     y_test = _modeling_data['y_test']
     
+    X_test_df = pd.DataFrame(X_test_final, columns=_selection_artifacts['selected_feature_names'])
+    
     y_proba_final = final_model.predict_proba(X_test_final)[:, 1]
     
     from sklearn.metrics import precision_recall_curve, average_precision_score
     precision_data, recall_data, thresholds = precision_recall_curve(y_test, y_proba_final)
     
+    explainer = shap.TreeExplainer(final_model)
+    shap_values = explainer.shap_values(X_test_df)
+    
     final_artifacts = {
         'model_name': best_model_name,
         'model_object': final_model,
-        'predictions_proba': y_proba_final,
+        'X_test_df': X_test_df,
+        'y_test': y_test,
+        'y_proba_final': y_proba_final,
         'precision_recall_curve': (precision_data, recall_data, thresholds),
-        'avg_precision_score': average_precision_score(y_test, y_proba_final)
+        'avg_precision_score': average_precision_score(y_test, y_proba_final),
+        'shap_explainer': explainer,
+        'shap_values': shap_values[1] if isinstance(shap_values, list) else shap_values
     }
     return final_artifacts
 
@@ -952,40 +964,36 @@ def render_final_model_analysis_module(tuning_artifacts, modeling_data, selectio
         st.markdown("""
         **O Quê?** Chegamos à fase final da modelagem. Aqui, selecionamos o modelo com a melhor performance após a otimização e o analisamos sob a ótica mais importante: a de negócio.
         
-        **Por quê?** Um modelo não toma decisões sozinho. Ele nos dá uma **probabilidade** de um cliente reclamar. Nós, humanos, precisamos definir o **limiar de decisão**: qual o nível de probabilidade (ex: 30%, 50%, 70%) que usaremos para classificar um cliente como "de risco" e agir? Essa escolha envolve um trade-off:
-        - **Limiar Baixo:** Capturamos mais clientes que reclamam (**Recall alto**), mas também contatamos mais clientes que não reclamariam (**Precisão baixa**). Custo da ação é maior.
-        - **Limiar Alto:** Somos mais seletivos, contatando apenas os casos mais prováveis (**Precisão alta**), mas arriscamos perder alguns clientes que reclamam (**Recall baixo**). Custo do risco é maior.
-        
-        A ferramenta interativa abaixo permite que você simule esse trade-off e escolha o ponto de equilíbrio ideal para a estratégia da empresa.
+        **Por quê?** Um modelo não toma decisões sozinho. Ele nos dá uma **probabilidade** de um cliente reclamar. Nós, humanos, precisamos definir o **limiar de decisão**: qual o nível de probabilidade que usaremos para classificar um cliente como "de risco" e agir? Essa escolha envolve um trade-off entre Precisão e Recall.
         """)
 
-        if st.button("Selecionar e Analisar Modelo Campeão", key="final_model_button", type='primary'):
-            final_model_artifacts = select_and_evaluate_final_model(tuning_artifacts, modeling_data, selection_artifacts)
+        if st.button("Analisar Modelo Campeão e Gerar Explicações", key="final_model_button", type='primary'):
+            final_artifacts = finalize_and_explain_model(tuning_artifacts, modeling_data, selection_artifacts)
             
-            if final_model_artifacts is None:
+            if final_artifacts is None:
                 st.error(
-                    "**Nenhum modelo foi otimizado.** Isso pode acontecer se os modelos de melhor performance no baseline (ex: KNN, Decision Tree) não estavam na lista para otimização. Por favor, volte à Etapa 5 e selecione um número maior de modelos para otimizar, garantindo que modelos como LightGBM ou XGBoost sejam incluídos.",
+                    "**Nenhum modelo foi otimizado.** Isso pode acontecer se os modelos de melhor performance no baseline não estavam na lista para otimização.",
                     icon="⚠️"
                 )
             else:
-                st.session_state['artifacts']['final_model_artifacts'] = final_model_artifacts
+                st.session_state['artifacts']['final_artifacts'] = final_artifacts
                 st.session_state.app_stage = 'final_model_selected'
-                st.success("Análise do modelo final concluída!")
+                st.success("Análise do modelo final e explicações SHAP geradas!")
                 st.rerun()
 
-    if 'final_model_artifacts' in st.session_state.get('artifacts', {}):
+    if 'final_artifacts' in st.session_state.get('artifacts', {}):
         with st.container(border=True):
-            artifacts = st.session_state['artifacts']['final_model_artifacts']
+            artifacts = st.session_state['artifacts']['final_artifacts']
             st.subheader(f"Análise de Trade-off para o Modelo Campeão: {artifacts['model_name']}")
-            st.success(f"O modelo campeão, **{artifacts['model_name']}**, foi selecionado com base na melhor performance de AUC na otimização.")
-
+            
             st.markdown("#### Análise Interativa do Limiar de Decisão")
-            st.markdown("Use o slider abaixo para definir o **limiar de probabilidade**. Observe como as métricas de **Recall** e **Precisão** mudam. Sua tarefa é encontrar o balanço ideal: qual o mínimo de Recall que a empresa aceita? Qual a máxima precisão que podemos atingir para esse Recall?")
+            st.markdown("Use o slider abaixo para definir o **limiar de probabilidade**. Observe como as métricas mudam. Sua tarefa é encontrar o balanço ideal para a estratégia da empresa.")
             
-            decision_threshold = st.slider("Arraste para ajustar o limiar de decisão de risco:", 0.0, 1.0, 0.5, 0.01)
+            decision_threshold = st.slider("Arraste para ajustar o limiar de decisão de risco:", 0.0, 1.0, st.session_state.get('decision_threshold', 0.5), 0.01)
+            st.session_state['decision_threshold'] = decision_threshold
             
-            y_pred_adj = (artifacts['predictions_proba'] >= decision_threshold).astype(int)
-            y_test = modeling_data['y_test']
+            y_pred_adj = (artifacts['y_proba_final'] >= decision_threshold).astype(int)
+            y_test = artifacts['y_test']
 
             adj_recall = recall_score(y_test, y_pred_adj)
             adj_precision = precision_score(y_test, y_pred_adj)
@@ -997,7 +1005,6 @@ def render_final_model_analysis_module(tuning_artifacts, modeling_data, selectio
             cols[2].metric("F1-Score com Limiar Ajustado", f"{adj_f1:.2%}")
 
             st.markdown("#### Curva de Precisão x Recall")
-            st.markdown("Este gráfico resume o trade-off. Ele mostra a precisão que obtemos para cada nível de recall. Uma área maior sob a curva indica um modelo melhor.")
             pr_precision, pr_recall, _ = artifacts['precision_recall_curve']
             fig = px.area(x=pr_recall[1:], y=pr_precision[1:], title=f"Curva de Precisão-Recall (Área = {artifacts['avg_precision_score']:.3f})", labels=dict(x="Recall (Capacidade de encontrar quem reclama)", y="Precisão (Assertividade das previsões de risco)"))
             fig.add_shape(type='line', x0=adj_recall, y0=0, x1=adj_recall, y1=adj_precision, line=dict(color='red', dash='dash'))
@@ -1008,101 +1015,56 @@ def render_final_model_analysis_module(tuning_artifacts, modeling_data, selectio
             st.plotly_chart(fig, use_container_width=True)
 
             st.info("""
-            **Conclusão e Próximo Passo:** Agora que você pode definir uma estratégia de negócio (o limiar), navegue para a página **"Análise Avançada e de Negócio"**. Lá, usaremos este modelo final e o limiar escolhido para entender *quais* clientes são de risco (interpretabilidade) e simular o impacto financeiro de uma campanha de retenção (análise de ROI).
+            **Conclusão e Próximo Passo:** Agora que você pode definir uma estratégia de negócio (o limiar), navegue para a página **"Análise Avançada e de Negócio"**. Lá, usaremos este modelo final e o limiar escolhido para entender o comportamento do modelo e simular o impacto financeiro de uma campanha.
             """, icon="💡")
 
 def display_advanced_analysis_page():
-    st.header("Análise Avançada e de Negócio", anchor=False)
-    st.markdown("""
-    Nesta seção final, vamos além das métricas de performance para extrair o máximo de valor do nosso modelo. Aqui, vamos interpretar suas decisões,
-    simular o impacto financeiro de nossas ações e preparar os resultados para serem compartilhados.
-    """)
+    st.header("Análise Avançada e de Negócio", divider='rainbow')
 
-    if not st.session_state.get('app_stage') == 'final_model_selected':
-        st.warning("Por favor, execute todo o pipeline na página 'Modelagem e Avaliação' para acessar a Análise Avançada.")
-        st.info("Você precisa clicar no botão 'Selecionar e Analisar Modelo Campeão' na página anterior.")
+    if 'final_artifacts' not in st.session_state.get('artifacts', {}):
+        st.error("⚠️ Por favor, complete a Etapa 6 na aba 'Modelagem e Avaliação' primeiro para gerar os artefatos do modelo final.", icon="🚨")
+        st.warning("É necessário clicar no botão 'Analisar Modelo Campeão e Gerar Explicações' para prosseguir.")
         return
-
-    # Se todas as etapas foram concluídas, os artefatos estarão disponíveis na sessão
-    final_model_artifacts = st.session_state['artifacts']['final_model_artifacts']
-    modeling_data = st.session_state['artifacts']['modeling_data']
-    selection_artifacts = st.session_state['artifacts']['selection_artifacts']
-    processed_df = st.session_state['processed_df']
+        
+    final_artifacts = st.session_state.artifacts['final_artifacts']
     
-    # Estrutura de abas para organizar a análise avançada
     tab_xai, tab_roi, tab_export = st.tabs(["🤖 Interpretabilidade do Modelo (XAI)", "📈 Simulação de ROI", "📤 Exportar Resultados"])
     
     with tab_xai:
-        render_global_xai_module(final_model_artifacts, modeling_data, selection_artifacts)
-        render_local_xai_module(final_model_artifacts, modeling_data, selection_artifacts)
+        render_global_xai_module(final_artifacts)
+        render_local_xai_module(final_artifacts, st.session_state.artifacts['modeling_data'], st.session_state.artifacts['selection_artifacts'])
         
     with tab_roi:
-        render_business_impact_module(final_model_artifacts, modeling_data)
+        render_business_impact_module(final_artifacts)
         
     with tab_export:
-        render_export_module(final_model_artifacts, selection_artifacts, processed_df)
+        render_export_module(final_artifacts, st.session_state.artifacts['selection_artifacts'], st.session_state['processed_df'])
 
-@st.cache_data(show_spinner="Calculando valores SHAP para interpretabilidade global...")
-def calculate_global_shap_values(_final_model_artifacts, _modeling_data, _selection_artifacts):
-    """Calcula os valores SHAP para uma amostra dos dados de treino."""
-    model = _final_model_artifacts['model_object']
-    X_train_final = _selection_artifacts['selector_object'].transform(_modeling_data['X_train_resampled'])
-    
-    # SHAP requer que o explainer seja treinado nos mesmos dados que o modelo
-    X_train_sample = shap.sample(X_train_final, 200) # Amostra para performance
-    explainer = shap.TreeExplainer(model, X_train_sample)
-    
-    # Usar uma amostra de teste para a visualização, para ser mais representativo do desempenho real
-    X_test_final = _selection_artifacts['selector_object'].transform(_modeling_data['X_test'])
-    X_test_sample = shap.sample(X_test_final, 200)
-    
-    shap_values = explainer.shap_values(X_test_sample)
-    
-    feature_names = _selection_artifacts['selected_feature_names']
-    
-    shap_artifacts = {
-        'explainer': explainer,
-        'shap_values': shap_values,
-        'X_sample': X_test_sample,
-        'feature_names': feature_names
-    }
-    return shap_artifacts
-
-def render_global_xai_module(final_model_artifacts, modeling_data, selection_artifacts):
+def render_global_xai_module(final_artifacts):
     with st.container(border=True):
         st.subheader("Análise de Interpretabilidade Global (XAI com SHAP)")
         st.markdown("Aqui, abrimos a 'caixa-preta' do modelo para entender quais fatores ele considera mais importantes em suas decisões, de forma geral.")
         
-        if 'shap_artifacts' not in st.session_state.get('artifacts', {}):
-            if st.button("Gerar Análise de Interpretabilidade Global", key="xai_button"):
-                shap_artifacts = calculate_global_shap_values(final_model_artifacts, modeling_data, selection_artifacts)
-                st.session_state['artifacts']['shap_artifacts'] = shap_artifacts
-                st.rerun()
+        X_test_df = final_artifacts['X_test_df']
+        shap_values = final_artifacts['shap_values']
+
+        st.markdown("#### Importância Geral das Features (SHAP Bar Plot)")
+        st.markdown("Este gráfico ranqueia as features pelo seu impacto médio absoluto nas previsões.")
+        fig_bar, ax_bar = plt.subplots()
+        shap.summary_plot(shap_values, X_test_df, plot_type="bar", show=False)
+        st.pyplot(fig_bar)
         
-        if 'shap_artifacts' in st.session_state.get('artifacts', {}):
-            artifacts = st.session_state['artifacts']['shap_artifacts']
-            shap_values_for_plot = artifacts['shap_values'][1] if isinstance(artifacts['shap_values'], list) else artifacts['shap_values']
-            X_sample_df = pd.DataFrame(artifacts['X_sample'], columns=artifacts['feature_names'])
-            
-            st.markdown("#### Importância Geral das Features (SHAP Bar Plot)")
-            st.markdown("Este gráfico ranqueia as features pelo seu impacto médio absoluto nas previsões.")
-            fig_bar, ax_bar = plt.subplots()
-            shap.summary_plot(shap_values_for_plot, X_sample_df, plot_type="bar", show=False)
-            st.pyplot(fig_bar)
-            
-            st.markdown("#### Impacto e Distribuição das Features (SHAP Beeswarm Plot)")
-            st.markdown("""
-            Este gráfico mostra o impacto de cada feature para cada cliente da amostra.
-            - **Eixo X:** Valor SHAP (impacto na previsão). Valores positivos aumentam o risco.
-            - **Cor:** Valor da feature (vermelho = alto, azul = baixo).
-            """)
-            fig_beeswarm, ax_beeswarm = plt.subplots()
-            shap.summary_plot(shap_values_for_plot, X_sample_df, plot_type='dot', show=False)
-            st.pyplot(fig_beeswarm)
+        st.markdown("#### Impacto e Distribuição das Features (SHAP Beeswarm Plot)")
+        st.markdown("""
+        Este gráfico mostra o impacto de cada feature para cada cliente da amostra.
+        - **Eixo X:** Valor SHAP (impacto na previsão). Valores positivos aumentam o risco.
+        - **Cor:** Valor da feature (vermelho = alto, azul = baixo).
+        """)
+        fig_beeswarm, ax_beeswarm = plt.subplots()
+        shap.summary_plot(shap_values, X_test_df, plot_type='dot', show=False)
+        st.pyplot(fig_beeswarm)
 
-# Insira este bloco de código no lugar das duas funções que você apagou
-
-def render_local_xai_module(final_model_artifacts, modeling_data, selection_artifacts):
+def render_local_xai_module(final_artifacts, modeling_data, selection_artifacts):
     with st.container(border=True):
         st.subheader("Análise de Previsão Individual (Interpretabilidade Local)")
         st.markdown("""
@@ -1118,7 +1080,6 @@ def render_local_xai_module(final_model_artifacts, modeling_data, selection_arti
             form_cols = st.columns(3)
             input_values = {}
             
-            integer_features = ['Recency', 'Age', 'Marketing_Engagements', 'Total_Purchases', 'Children_Total']
             all_numeric_features = [
                 'Total_Spent', 'Recency', 'Income', 'Customer_Lifetime_Days', 
                 'Age', 'Marketing_Engagements', 'Luxury_Purchase_Ratio', 
@@ -1129,24 +1090,13 @@ def render_local_xai_module(final_model_artifacts, modeling_data, selection_arti
                 with form_cols[i % 3]:
                     if feature in X_train_orig.columns:
                         series = X_train_orig[feature]
+                        min_val, max_val, mean_val = series.min(), series.max(), series.mean()
                         
-                        if feature in integer_features:
-                            min_val, max_val, mean_val = int(series.min()), int(series.max()), int(series.mean())
-                            # AJUSTE 2: Remoção do sufixo "(Inteiro)"
-                            input_values[feature] = st.slider(
-                                f"Valor para '{feature}'", 
-                                min_val, max_val, mean_val, step=1
-                            )
-                        else: 
-                            min_val, max_val, mean_val = float(series.min()), float(series.max()), float(series.mean())
-                            step = 0.01 if feature == 'Luxury_Purchase_Ratio' else 1.0
-                            # AJUSTE 2: Remoção do sufixo "(Decimal)"
-                            input_values[feature] = st.number_input(
-                                f"Valor para '{feature}'",
-                                min_val, max_val, mean_val, step=step
-                            )
-
-            # Mantém os seletores para variáveis categóricas
+                        if series.dtype == 'int64':
+                            input_values[feature] = st.slider(f"Valor para '{feature}'", int(min_val), int(max_val), int(mean_val))
+                        else:
+                            input_values[feature] = st.number_input(f"Valor para '{feature}'", float(min_val), float(max_val), float(mean_val))
+            
             with form_cols[len(all_numeric_features) % 3]:
                  input_values['Education'] = st.selectbox("Educação", X_train_orig['Education'].unique())
             with form_cols[(len(all_numeric_features) + 1) % 3]:
@@ -1163,49 +1113,41 @@ def render_local_xai_module(final_model_artifacts, modeling_data, selection_arti
                 
                 preprocessor = modeling_data['preprocessor']
                 selector = selection_artifacts['selector_object']
-                
+                model = final_artifacts['model_object']
+                explainer = final_artifacts['shap_explainer']
+
                 input_processed = preprocessor.transform(full_input_df)
                 input_final = selector.transform(input_processed)
                 
-                model = final_model_artifacts['model_object']
-                explainer = shap.Explainer(model, st.session_state.artifacts['shap_artifacts']['X_sample'])
-                shap_values_local = explainer(input_final)
-
                 prediction_proba = model.predict_proba(input_final)[0][1]
-
                 st.metric("Probabilidade de Reclamação para este Cliente", f"{prediction_proba:.2%}")
 
                 st.markdown("##### Explicação Visual da Previsão (SHAP Force Plot)")
                 
+                shap_values_local = explainer.shap_values(input_final[0])
+                
                 force_plot = shap.force_plot(
-                    shap_values_local[0],
-                    feature_names=selection_artifacts['selected_feature_names']
+                    base_value=float(explainer.expected_value),
+                    shap_values=shap_values_local,
+                    features=pd.DataFrame(input_final, columns=selection_artifacts['selected_feature_names']).iloc[0]
                 )
                 
-                shap_html = f"<head>{shap.getjs()}</head><body><div style='background-color: white; padding: 15px; border-radius: 5px;'>{force_plot.html()}</div></body>"
-                st.components.v1.html(shap_html, height=200, scrolling=True)
-
-                # AJUSTE 3: Adição da explicação textual do gráfico SHAP
+                shap_html = f"<head>{shap.getjs()}</head><body>{force_plot.html()}</body>"
+                st.components.v1.html(shap_html, height=160)
+                
                 st.markdown("---")
                 st.markdown("#### Análise do Gráfico")
                 st.info(
                     """
                     **Como interpretar o gráfico acima:**
-
-                    O gráfico de força do SHAP mostra como cada característica do cliente empurra a previsão do modelo para longe ou para perto do resultado final.
-
-                    - **Valor Base (base value):** É a probabilidade média de reclamação em todo o conjunto de dados. Pense nele como o ponto de partida da previsão antes de conhecermos as características deste cliente específico.
-
-                    - **Setas Vermelhas (Fatores de Risco):** São as características que **aumentam** a probabilidade de reclamação para o perfil simulado. Quanto maior a seta, maior o impacto daquela característica na elevação do risco.
-
-                    - **Setas Azuis (Fatores de Proteção):** São as características que **diminuem** a probabilidade de reclamação. Quanto maior a seta, mais aquela característica contribui para classificar o cliente como de baixo risco.
-
-                    **Análise Prática:** Observe as maiores setas vermelhas. Elas representam os principais motivos pelos quais o modelo considera este cliente propenso a reclamar. Uma ação de retenção eficaz deveria focar em mitigar os problemas relacionados a esses fatores.
+                    - **Valor Base (base value):** É a probabilidade média de reclamação. O ponto de partida da previsão.
+                    - **Setas Vermelhas:** Características que **aumentam** a probabilidade de reclamação para este perfil.
+                    - **Setas Azuis:** Características que **diminuem** a probabilidade de reclamação.
+                    **Análise Prática:** As maiores setas vermelhas são os principais motivos para o modelo considerar este cliente como de risco.
                     """, icon="💡"
                 )
 
 def render_business_impact_module(final_model_artifacts, modeling_data):
-    # AJUSTE 1: Reversão para premissas antigas e ajuste de limites de valores.
     with st.container(border=True):
         st.subheader("Simulação de Impacto no Negócio e Análise de ROI")
         st.markdown("""
