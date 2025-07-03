@@ -837,80 +837,52 @@ def render_model_deep_dive_module(baseline_artifacts):
 
 from sklearn.model_selection import RandomizedSearchCV
 
-@st.cache_data(show_spinner="Aplicando refinamento de parâmetros e re-treinando modelos...")
-def run_instant_refinement(_baseline_artifacts, _modeling_data):
-    X_train_final = st.session_state['artifacts']['selection_artifacts']['selector_object'].transform(_modeling_data['X_train_resampled'])
-    y_train = _modeling_data['y_train_resampled']
+@st.cache_data
+def promote_best_baseline_model(_baseline_artifacts):
+    if not _baseline_artifacts:
+        return {}
+
+    best_model_name = max(_baseline_artifacts, key=lambda k: _baseline_artifacts[k]['metrics']['AUC'])
     
-    pre_tuned_params = {
-        "LightGBM": {'learning_rate': 0.05, 'n_estimators': 200, 'num_leaves': 31, 'random_state': ProjectConfig.RANDOM_STATE_SEED, 'verbose': -1},
-        "Random Forest": {'n_estimators': 150, 'max_depth': 20, 'min_samples_leaf': 2, 'min_samples_split': 5, 'random_state': ProjectConfig.RANDOM_STATE_SEED, 'n_jobs': -1}
+    best_model_artifacts = _baseline_artifacts[best_model_name]
+
+    promotion_results = {
+        best_model_name: {
+            'best_estimator': best_model_artifacts['model_object'],
+            'best_params': "Modelo de baseline selecionado sem otimização",
+            'best_score_cv': best_model_artifacts['metrics']['AUC']
+        }
     }
-    
-    leaderboard_df = pd.DataFrame([{'Modelo': name, 'AUC': res['metrics']['AUC']} for name, res in _baseline_artifacts.items()]).set_index('Modelo').sort_values(by='AUC', ascending=False)
-    
-    models_to_refine = [model for model in leaderboard_df.index if model in pre_tuned_params]
+    return promotion_results
 
-    model_initializers = {
-        "LightGBM": LGBMClassifier,
-        "Random Forest": RandomForestClassifier
-    }
-
-    refinement_results = {}
-    for model_name in models_to_refine:
-        if model_name in model_initializers:
-            params = pre_tuned_params[model_name]
-            refined_model = model_initializers[model_name](**params)
-            
-            refined_model.fit(X_train_final, y_train)
-            
-            refinement_results[model_name] = {
-                'best_estimator': refined_model,
-                'best_params': params,
-                'best_score_cv': _baseline_artifacts[model_name]['metrics']['AUC'] 
-            }
-    return refinement_results
-
-def render_hyperparameter_tuning_module(baseline_artifacts, modeling_data):
+def render_hyperparameter_tuning_module(baseline_artifacts):
     st.markdown("---")
     with st.container(border=True):
-        st.subheader("Etapa 5: Refinamento Instantâneo dos Campeões")
+        st.subheader("Etapa 5: Seleção do Modelo Final")
         st.markdown("""
-        **O Quê?** Para garantir uma performance impecável do aplicativo, eliminamos a demorada busca por hiperparâmetros. Em vez disso, aplicamos diretamente um conjunto de **parâmetros pré-otimizados** aos melhores modelos da fase anterior.
-        
-        **Por quê?** Esta abordagem de "refinamento instantâneo" nos dá o benefício de um modelo mais sofisticado do que o padrão, sem o custo computacional de uma busca exaustiva. É a solução ideal para um ambiente interativo na nuvem, garantindo velocidade e estabilidade.
-        """)
-        
-        tunable_models = ["LightGBM", "Random Forest"]
-        st.info(f"Nesta etapa, aplicaremos configurações otimizadas para os modelos: **{', '.join(tunable_models)}**, caso eles estejam entre os melhores do baseline.")
+        **O Quê?** Para garantir a performance e estabilidade do aplicativo, esta etapa agora funciona como uma **promoção automática**. O sistema identifica o modelo com a melhor performance de AUC na etapa de baseline (Etapa 3) e o seleciona para a análise final.
 
-        if st.button("Aplicar Refinamento e Re-treinar", key="refine_button", type="primary"):
-            tuning_artifacts = run_instant_refinement(baseline_artifacts, modeling_data)
+        **Por quê?** A otimização de hiperparâmetros é um processo computacionalmente intensivo e inviável para ser executado ao vivo em um ambiente com recursos limitados. Esta abordagem garante uma experiência de usuário instantânea e seleciona o competidor mais forte já identificado para a fase final.
+        """)
+
+        if st.button("Selecionar Melhor Modelo do Baseline e Prosseguir", key="promote_button", type="primary"):
+            tuning_artifacts = promote_best_baseline_model(baseline_artifacts)
             st.session_state['artifacts']['tuning_artifacts'] = tuning_artifacts
             st.session_state.app_stage = 'models_tuned'
-            st.success("Refinamento aplicado com sucesso!")
+            st.success("Modelo campeão do baseline promovido com sucesso!")
             st.rerun()
 
     if 'tuning_artifacts' in st.session_state.get('artifacts', {}):
         with st.container(border=True):
             artifacts = st.session_state['artifacts']['tuning_artifacts']
             if not artifacts:
-                st.warning("O refinamento não foi aplicado. Isso acontece se os modelos do baseline (LightGBM, Random Forest) não tiveram uma performance inicial boa o suficiente para serem selecionados.")
+                st.warning("Não foi possível promover um modelo do baseline.")
             else:
-                st.subheader("Análise Pós-Refinamento")
-                st.markdown("Os modelos foram re-treinados com os seguintes parâmetros otimizados:")
+                st.subheader("Modelo Promovido para a Etapa Final")
+                model_name = list(artifacts.keys())[0]
+                original_auc = artifacts[model_name]['best_score_cv']
                 
-                for model_name, results in artifacts.items():
-                    st.markdown(f"##### **{model_name}**")
-                    original_auc = baseline_artifacts.get(model_name, {}).get('metrics', {}).get('AUC', 0)
-                    
-                    col1, col2 = st.columns([1, 2])
-                    with col1:
-                        st.metric("AUC Original (em teste)", f"{original_auc:.4f}")
-                        st.info("O modelo agora usa parâmetros aprimorados.", icon="⚙️")
-                    with col2:
-                        st.write("**Parâmetros Aplicados:**")
-                        st.json(results['best_params'])
+                st.info(f"O modelo **{model_name}** foi identificado como o de melhor performance no baseline (AUC de **{original_auc:.4f}**) e foi selecionado para a próxima etapa.", icon="🏆")
 
 @st.cache_data(show_spinner="Finalizando modelo campeão e calculando explicações SHAP...")
 def finalize_and_explain_model(_tuning_artifacts, _modeling_data, _selection_artifacts):
@@ -1279,7 +1251,7 @@ def display_modeling_page(df):
         render_model_deep_dive_module(st.session_state.artifacts['baseline_artifacts'])
     
     if 'baseline_artifacts' in st.session_state.get('artifacts', {}):
-        render_hyperparameter_tuning_module(st.session_state.artifacts['baseline_artifacts'], st.session_state.artifacts['modeling_data'])
+        render_hyperparameter_tuning_module(st.session_state.artifacts['baseline_artifacts'])
         
     if 'tuning_artifacts' in st.session_state.get('artifacts', {}):
         render_final_model_analysis_module(st.session_state.artifacts['tuning_artifacts'], st.session_state.artifacts['modeling_data'], st.session_state.artifacts['selection_artifacts'])
