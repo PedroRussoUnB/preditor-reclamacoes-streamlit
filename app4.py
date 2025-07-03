@@ -589,60 +589,69 @@ def render_data_preparation_module(df):
                 fig.add_trace(go.Scatter(x=df_after['PC1'], y=df_after['PC2'], mode='markers', marker=dict(color=df_after['target'], colorscale=[ProjectConfig.PRIMARY_COLOR, ProjectConfig.SECONDARY_COLOR], showscale=False), name='Depois'), row=1, col=2)
                 st.plotly_chart(fig, use_container_width=True)
 
+# Insira este bloco no lugar das funções run_feature_selection_cv e render_feature_selection_module
 
-@st.cache_data(show_spinner="Executando seleção de features com RFECV (pode levar alguns minutos)...")
-def run_feature_selection_cv(_modeling_data):
-    """Executa a Seleção Recursiva de Features com Validação Cruzada."""
+@st.cache_data(show_spinner="Executando seleção de features por importância...")
+def run_feature_selection_by_importance(_modeling_data, num_features_to_select):
+    """Executa a seleção de features baseada na importância de um modelo LightGBM."""
     X_train, y_train = _modeling_data['X_train_resampled'], _modeling_data['y_train_resampled']
     
+    # 1. Treinar um modelo uma única vez
     estimator = LGBMClassifier(random_state=ProjectConfig.RANDOM_STATE_SEED, n_jobs=-1, verbose=-1)
+    estimator.fit(X_train, y_train)
     
-    selector = RFECV(
-        estimator=estimator, 
-        step=2,
-        cv=StratifiedKFold(3),
-        scoring=ProjectConfig.RFE_CV_SCORING, 
-        min_features_to_select=8, 
-        n_jobs=-1
-    )
-    selector.fit(X_train, y_train)
-    
-    selected_features_names = [
-        name for name, selected in zip(_modeling_data['processed_feature_names'], selector.support_) if selected
-    ]
-    
-    feature_ranking = pd.DataFrame({
+    # 2. Extrair a importância das features
+    importances_df = pd.DataFrame({
         'Feature': _modeling_data['processed_feature_names'],
-        'Ranking': selector.ranking_
-    }).sort_values(by='Ranking')
+        'Importance': estimator.feature_importances_
+    }).sort_values(by='Importance', ascending=False)
+    
+    # 3. Selecionar as N melhores features
+    top_features = importances_df.head(num_features_to_select)
+    selected_features_names = top_features['Feature'].tolist()
+
+    # Criar um objeto "seletor" simulado para compatibilidade com o resto do código
+    class ManualSelector:
+        def __init__(self, selected_indices):
+            self.support_ = np.zeros(len(_modeling_data['processed_feature_names']), dtype=bool)
+            self.support_[selected_indices] = True
+        def transform(self, X):
+            return X[:, self.support_]
+
+    selected_indices = [
+        _modeling_data['processed_feature_names'].index(f) for f in selected_features_names
+    ]
+    selector_object = ManualSelector(selected_indices)
 
     selection_artifacts = {
-        'selector_object': selector,
-        'optimal_n_features': selector.n_features_,
+        'selector_object': selector_object,
+        'optimal_n_features': num_features_to_select,
         'selected_feature_names': selected_features_names,
-        'feature_ranking_df': feature_ranking,
-        'cv_scores': selector.cv_results_['mean_test_score']
+        'feature_ranking_df': importances_df, # Agora é o ranking de importância
     }
     return selection_artifacts
 
 def render_feature_selection_module(modeling_data):
     with st.container(border=True):
-        st.subheader("Etapa 2: Foco no que Importa - Seleção Inteligente de Features")
+        st.subheader("Etapa 2: Foco no que Importa - Seleção Rápida de Features")
         st.markdown("""
-        **O Quê?** Nem todas as variáveis são igualmente importantes para prever uma reclamação. Algumas podem ser redundantes ou até mesmo adicionar "ruído", confundindo o modelo. Usamos uma técnica avançada chamada **RFECV (Recursive Feature Elimination with Cross-Validation)**.
+        **O Quê?** Para garantir uma experiência de usuário rápida, substituímos o lento método RFECV por uma seleção baseada em **importância de features**. Treinamos um modelo LightGBM uma única vez e pedimos a ele para ranquear as variáveis da mais à menos importante.
         
-        Pense nela como um campeonato:
-        1. O RFECV treina um modelo com todas as variáveis.
-        2. Ele descarta as piores (menos importantes).
-        3. Ele treina um novo modelo com as variáveis restantes e repete o processo.
-        
-        Tudo isso é feito com validação cruzada para garantir que a escolha seja robusta. O objetivo é encontrar o "time" de variáveis com o maior poder preditivo.
-
-        **Por quê?** Usar apenas as features mais relevantes torna nossos modelos mais rápidos, mais fáceis de interpretar e, muitas vezes, mais precisos, pois eles se concentram nos sinais verdadeiros e ignoram o ruído.
+        **Por quê?** Esta abordagem é extremamente rápida e eficaz. Ela nos permite identificar as variáveis com maior poder preditivo em segundos, em vez de minutos. Você pode usar o controle deslizante abaixo para definir interativamente quantas das melhores features deseja usar na modelagem.
         """)
+
+        num_total_features = len(modeling_data['processed_feature_names'])
+        num_features = st.slider(
+            "Selecione quantas das features mais importantes você quer manter:",
+            min_value=5,
+            max_value=num_total_features,
+            value=min(20, num_total_features), # Sugere 20 como um bom ponto de partida
+            step=1
+        )
         
-        if st.button("Iniciar Seleção de Features", key="fs_button"):
-            selection_artifacts = run_feature_selection_cv(modeling_data)
+        if st.button("Executar Seleção Rápida de Features", key="fs_button_fast"):
+            # A execução agora é quase instantânea
+            selection_artifacts = run_feature_selection_by_importance(modeling_data, num_features)
             st.session_state['artifacts']['selection_artifacts'] = selection_artifacts
             st.session_state.app_stage = 'features_selected'
             st.success("Seleção de features concluída!")
@@ -653,36 +662,25 @@ def render_feature_selection_module(modeling_data):
             artifacts = st.session_state['artifacts']['selection_artifacts']
             st.subheader("Análise Pós-Seleção")
             st.markdown("""
-            **O que aconteceu?** O RFECV analisou todas as combinações e encontrou o número ideal de variáveis para o nosso problema.
-            - **Gráfico de Performance:** O gráfico abaixo mostra o desempenho do modelo (no eixo Y) para cada quantidade de features testadas (no eixo X). A linha verde marca o **"Ponto Ótimo"**, onde o modelo atinge seu pico de performance. Adicionar mais features além deste ponto não traz benefícios significativos.
-            - **Lista de Features:** Você pode expandir a seção abaixo para ver exatamente quais foram as features escolhidas como as mais importantes. Elas serão a base para a próxima etapa.
+            **O que aconteceu?** O modelo LightGBM foi treinado e ranqueou todas as features pela sua importância. Selecionamos as **{n_feats}** melhores, conforme sua escolha.
+            - **Gráfico de Importância:** O gráfico abaixo mostra o ranking. As features no topo são as que o modelo considera mais decisivas para prever uma reclamação.
+            - **Lista de Features:** Você pode expandir a seção para ver a lista exata de features que serão usadas na próxima etapa de modelagem.
+            """.format(n_feats=artifacts['optimal_n_features']))
             
-            **Próximo Passo:** Com nosso "time" de features de elite selecionado, estamos prontos para treinar um portfólio de diferentes modelos e ver qual deles se sai melhor na tarefa.
-            """)
-            st.metric(label="Número Ótimo de Features Encontrado pelo RFECV", value=artifacts['optimal_n_features'])
-            
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(
-                x=list(range(artifacts['selector_object'].min_features_to_select, len(artifacts['cv_scores'])*artifacts['selector_object'].step + artifacts['selector_object'].min_features_to_select, artifacts['selector_object'].step)),
-                y=artifacts['cv_scores'], mode='lines+markers', name=f'Score ({ProjectConfig.RFE_CV_SCORING})'
-            ))
-            fig.add_vline(
-                x=artifacts['optimal_n_features'], line_width=2, line_dash="dash", 
-                line_color=ProjectConfig.SUCCESS_COLOR, annotation_text="Ponto Ótimo", annotation_position="top left"
+            # Gráfico de importância das features
+            ranking_df = artifacts['feature_ranking_df']
+            fig = px.bar(
+                ranking_df.head(30), # Mostra as 30 melhores
+                x='Importance',
+                y='Feature',
+                orientation='h',
+                title="Ranking de Importância das Features (as 30 melhores)"
             )
-            fig.update_layout(title="Performance do Modelo vs. Número de Features (RFECV)",
-                              xaxis_title="Número de Features Selecionadas",
-                              yaxis_title=f"Score de Validação Cruzada ({ProjectConfig.RFE_CV_SCORING})")
+            fig.update_layout(yaxis={'categoryorder':'total ascending'}, height=600)
             st.plotly_chart(fig, use_container_width=True)
 
-            with st.expander("Ver Ranking e Lista Final de Features"):
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.write("✅ **Features Selecionadas para a Modelagem:**")
-                    st.dataframe(pd.DataFrame(artifacts['selected_feature_names'], columns=["Feature"]), height=300, use_container_width=True)
-                with col2:
-                    st.write("🏆 **Ranking Geral de Importância:**")
-                    st.dataframe(artifacts['feature_ranking_df'], height=300, use_container_width=True)
+            with st.expander("Ver Lista de Features Selecionadas para a Modelagem"):
+                st.dataframe(pd.DataFrame(artifacts['selected_feature_names'], columns=["Feature Selecionada"]), use_container_width=True)
 
 @st.cache_data(show_spinner="Treinando todos os 8 modelos de baseline... Este processo é intensivo e pode levar alguns minutos.")
 def train_all_baseline_models(_modeling_data, _selection_artifacts):
