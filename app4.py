@@ -835,63 +835,64 @@ def render_model_deep_dive_module(baseline_artifacts):
                 else:
                     st.info(f"O modelo '{model_to_inspect}' não possui um atributo '.feature_importances_' para análise direta de importância (ex: SVM com kernel não-linear).")
 
-@st.cache_data(show_spinner="Executando busca em grade para otimização de hiperparâmetros...")
+from sklearn.model_selection import RandomizedSearchCV
+
+@st.cache_data(show_spinner="Executando busca aleatória otimizada para hiperparâmetros...")
 def run_hyperparameter_tuning(_baseline_artifacts, _modeling_data, top_n_models):
-    """Executa GridSearchCV nos N melhores modelos do baseline."""
     X_train_final = st.session_state['artifacts']['selection_artifacts']['selector_object'].transform(_modeling_data['X_train_resampled'])
     y_train = _modeling_data['y_train_resampled']
     
-    param_grids = {
-        "LightGBM": {'n_estimators': [100, 200, 300], 'learning_rate': [0.01, 0.05, 0.1], 'num_leaves': [20, 31, 40]},
-        "XGBoost": {'n_estimators': [100, 200, 300], 'learning_rate': [0.01, 0.05, 0.1], 'max_depth': [3, 5, 7]},
-        "Random Forest": {'n_estimators': [100, 200], 'max_depth': [10, 20, None], 'min_samples_leaf': [1, 2, 4]},
-        "Gradient Boosting": {'n_estimators': [100, 200], 'learning_rate': [0.05, 0.1], 'max_depth': [3, 5]},
-        "SVC": {'C': [1, 10, 50], 'gamma': ['scale', 'auto'], 'kernel': ['rbf']}
+    param_distributions = {
+        "LightGBM": {'n_estimators': [100, 200, 300, 400], 'learning_rate': [0.01, 0.05, 0.1, 0.2], 'num_leaves': [20, 31, 40, 50]},
+        "Random Forest": {'n_estimators': [100, 200, 300], 'max_depth': [10, 20, 30, None], 'min_samples_leaf': [1, 2, 4], 'min_samples_split': [2, 5, 10]}
     }
     
     leaderboard_df = pd.DataFrame([{'Modelo': name, 'AUC': res['metrics']['AUC']} for name, res in _baseline_artifacts.items()]).set_index('Modelo').sort_values(by='AUC', ascending=False)
     
-    tunable_models_list = list(param_grids.keys())
+    tunable_models_list = list(param_distributions.keys())
     tunable_leaderboard = leaderboard_df[leaderboard_df.index.isin(tunable_models_list)]
     models_to_tune = tunable_leaderboard.head(top_n_models).index.tolist()
 
     model_initializers = {
         "LightGBM": LGBMClassifier(random_state=ProjectConfig.RANDOM_STATE_SEED, verbose=-1),
-        "XGBoost": XGBClassifier(random_state=ProjectConfig.RANDOM_STATE_SEED, use_label_encoder=False, eval_metric='logloss', verbosity=0),
-        "Random Forest": RandomForestClassifier(random_state=ProjectConfig.RANDOM_STATE_SEED),
-        "Gradient Boosting": GradientBoostingClassifier(random_state=ProjectConfig.RANDOM_STATE_SEED),
-        "SVC": SVC(probability=True, random_state=ProjectConfig.RANDOM_STATE_SEED)
+        "Random Forest": RandomForestClassifier(random_state=ProjectConfig.RANDOM_STATE_SEED, n_jobs=-1)
     }
 
     tuning_results = {}
     for model_name in models_to_tune:
-        if model_name in param_grids:
+        if model_name in model_initializers:
             base_model = model_initializers[model_name]
-            grid_search = GridSearchCV(estimator=base_model, param_grid=param_grids[model_name], cv=3, scoring='roc_auc', n_jobs=-1, verbose=1)
-            grid_search.fit(X_train_final, y_train)
-            tuning_results[model_name] = {'best_estimator': grid_search.best_estimator_, 'best_params': grid_search.best_params_, 'best_score_cv': grid_search.best_score_}
+            random_search = RandomizedSearchCV(
+                estimator=base_model, 
+                param_distributions=param_distributions[model_name], 
+                n_iter=10, 
+                cv=3, 
+                scoring='roc_auc', 
+                n_jobs=-1, 
+                random_state=ProjectConfig.RANDOM_STATE_SEED,
+                verbose=1
+            )
+            random_search.fit(X_train_final, y_train)
+            tuning_results[model_name] = {'best_estimator': random_search.best_estimator_, 'best_params': random_search.best_params_, 'best_score_cv': random_search.best_score_}
     return tuning_results
 
 def render_hyperparameter_tuning_module(baseline_artifacts, modeling_data):
     st.markdown("---")
     with st.container(border=True):
-        st.subheader("Etapa 5: Ajuste Fino dos Campeões (Otimização)")
+        st.subheader("Etapa 5: Ajuste Fino dos Campeões (Otimização Rápida)")
         st.markdown("""
-        **O Quê?** Selecionamos os melhores modelos da fase anterior e os submetemos a um "ajuste fino". Se um modelo fosse um carro de corrida, esta etapa seria como levar os melhores carros para uma oficina especializada para ajustar o motor, a suspensão e a aerodinâmica para extrair cada gota de performance. Tecnicamente, chamamos isso de **Otimização de Hiperparâmetros**.
+        **O Quê?** Selecionamos os melhores modelos da fase anterior e os submetemos a um "ajuste fino". Para garantir a velocidade, usamos uma técnica moderna chamada **Busca Aleatória (`RandomizedSearchCV`)**.
         
-        **Por quê?** Os modelos vêm com configurações padrão. A otimização testa centenas de combinações dessas configurações (usando `GridSearchCV`) para encontrar a combinação perfeita que maximiza o poder preditivo do nosso modelo para este problema específico.
+        **Por quê?** Em vez de testar exaustivamente todas as combinações de parâmetros (o que é muito lento), a Busca Aleatória testa um número fixo de combinações escolhidas ao acaso. Este método é muito mais eficiente e quase sempre encontra um conjunto de parâmetros de alta performance em uma fração do tempo.
         """)
         
-        param_grids = {
-            "LightGBM": {}, "XGBoost": {}, "Random Forest": {}, 
-            "Gradient Boosting": {}, "SVC": {}
-        }
-        max_tunable_models = len(param_grids)
+        tunable_models = ["LightGBM", "Random Forest"]
         
-        top_n = st.slider(f"Selecione quantos dos melhores modelos (de um total de {max_tunable_models} otimizáveis) você deseja otimizar:", 1, max_tunable_models, min(2, max_tunable_models), key="tuner_slider")
-        
-        if st.button("Iniciar Otimização dos Melhores Modelos", key="tune_button"):
-            tuning_artifacts = run_hyperparameter_tuning(baseline_artifacts, modeling_data, top_n)
+        st.info(f"Nesta etapa, focaremos em otimizar os modelos mais promissores e flexíveis: **{', '.join(tunable_models)}**.")
+
+        if st.button("Iniciar Otimização Rápida", key="tune_button", type="primary"):
+            top_n_to_tune = len(tunable_models) 
+            tuning_artifacts = run_hyperparameter_tuning(baseline_artifacts, modeling_data, top_n_to_tune)
             st.session_state['artifacts']['tuning_artifacts'] = tuning_artifacts
             st.session_state.app_stage = 'models_tuned'
             st.success("Otimização concluída!")
@@ -900,27 +901,29 @@ def render_hyperparameter_tuning_module(baseline_artifacts, modeling_data):
     if 'tuning_artifacts' in st.session_state.get('artifacts', {}):
         with st.container(border=True):
             artifacts = st.session_state['artifacts']['tuning_artifacts']
-            st.subheader("Análise Pós-Otimização")
-            st.markdown("""
-            **O que aconteceu?** O `GridSearchCV` testou várias configurações e encontrou a melhor para cada modelo.
-            - **Resultados:** Abaixo, comparamos o desempenho do modelo antes (AUC Original) e depois do ajuste (AUC Otimizado). O "delta" mostra o ganho de performance. Mesmo um pequeno aumento percentual na AUC pode representar a identificação correta de dezenas de clientes em risco.
-            - **Melhores Parâmetros:** Mostramos as configurações exatas que geraram o melhor resultado.
-            
-            **Próximo Passo:** Com os modelos em sua performance máxima, estamos prontos para selecionar o grande campeão e analisá-lo sob a ótica do negócio.
-            """)
-            
-            for model_name, results in artifacts.items():
-                st.markdown(f"##### **{model_name}**")
-                original_auc = baseline_artifacts[model_name]['metrics']['AUC']
-                tuned_cv_auc = results['best_score_cv']
+            if not artifacts:
+                st.warning("A otimização não retornou resultados. Isso pode acontecer se os modelos do baseline (LightGBM, Random Forest) não tiveram uma performance inicial boa o suficiente. Tente reexecutar o pipeline.")
+            else:
+                st.subheader("Análise Pós-Otimização")
+                st.markdown("""
+                **O que aconteceu?** A Busca Aleatória testou 10 combinações de configurações para cada modelo e encontrou a melhor.
+                - **Resultados:** Abaixo, comparamos o desempenho do modelo antes (AUC Original) e depois do ajuste (AUC Otimizado).
+                - **Melhores Parâmetros:** Mostramos as configurações exatas que geraram o melhor resultado.
+                """)
                 
-                col1, col2 = st.columns([1, 2])
-                with col1:
-                    st.metric("AUC Original (em teste)", f"{original_auc:.4f}")
-                    st.metric("AUC Otimizado (em treino)", f"{tuned_cv_auc:.4f}", delta=f"{(tuned_cv_auc - original_auc):.4f}", help="A melhora é calculada em relação ao AUC original. O AUC otimizado é medido na validação cruzada do treino.")
-                with col2:
-                    st.write("**Melhores Parâmetros Encontrados:**")
-                    st.json(results['best_params'])
+                for model_name, results in artifacts.items():
+                    st.markdown(f"##### **{model_name}**")
+                    original_auc = baseline_artifacts.get(model_name, {}).get('metrics', {}).get('AUC', 0)
+                    tuned_cv_auc = results['best_score_cv']
+                    
+                    col1, col2 = st.columns([1, 2])
+                    with col1:
+                        st.metric("AUC Original (em teste)", f"{original_auc:.4f}")
+                        st.metric("AUC Otimizado (em treino)", f"{tuned_cv_auc:.4f}", delta=f"{(tuned_cv_auc - original_auc):.4f}" if original_auc > 0 else "N/A", help="A melhora é calculada em relação ao AUC original. O AUC otimizado é medido na validação cruzada do treino.")
+                    with col2:
+                        st.write("**Melhores Parâmetros Encontrados:**")
+                        st.json(results['best_params'])
+
 @st.cache_data(show_spinner="Finalizando modelo campeão e calculando explicações SHAP...")
 def finalize_and_explain_model(_tuning_artifacts, _modeling_data, _selection_artifacts):
     if not _tuning_artifacts:
