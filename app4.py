@@ -606,69 +606,43 @@ class ManualSelector:
             raise RuntimeError("O método 'fit' deve ser chamado antes do 'transform'.")
         return X[:, self.support_]
 
-@st.cache_data(show_spinner="Executando seleção de features por importância...")
-def run_feature_selection_by_importance(X_train, y_train, feature_names):
-    """Executa a seleção de features baseada na importância de um modelo LightGBM."""
-    estimator = LGBMClassifier(random_state=ProjectConfig.RANDOM_STATE_SEED, n_estimators=50, n_jobs=-1, verbose=-1)
-    estimator.fit(X_train, y_train)
-    
-    importances_df = pd.DataFrame({
-        'Feature': feature_names,
-        'Importance': estimator.feature_importances_
-    }).sort_values(by='Importance', ascending=False)
-    
-    total_importance = importances_df['Importance'].sum()
-    importances_df['Cumulative_Importance'] = importances_df['Importance'].cumsum()
-    importances_df['Cumulative_Percentage'] = importances_df['Cumulative_Importance'] / total_importance
-    
-    optimal_n_features = (importances_df['Cumulative_Percentage'] <= 0.95).sum() + 1
-    optimal_n_features = min(optimal_n_features, len(importances_df))
+@st.cache_data(show_spinner="Carregando resultados da seleção de features...")
+def load_selection_artifacts():
+    try:
+        with open('selection_artifacts.pkl', 'rb') as f:
+            selection_artifacts = pickle.load(f)
+        return selection_artifacts
+    except FileNotFoundError:
+        st.error("ERRO CRÍTICO: O arquivo 'selection_artifacts.pkl' não foi encontrado. Por favor, execute o script de geração de artefatos.", icon="🚨")
+        return None
+    except Exception as e:
+        st.error(f"Erro ao carregar o arquivo de seleção de features: {e}", icon="🚨")
+        return None
 
-    top_features = importances_df.head(optimal_n_features)
-    selected_features_names = top_features['Feature'].tolist()
-
-    selected_indices = [
-        feature_names.index(f) for f in selected_features_names
-    ]
-    
-    selector_object = ManualSelector(selected_indices)
-    selector_object.fit(X_train)
-
-    selection_artifacts = {
-        'selector_object': selector_object,
-        'optimal_n_features': optimal_n_features,
-        'selected_feature_names': selected_features_names,
-        'feature_ranking_df': importances_df,
-    }
-    return selection_artifacts
-
-def render_feature_selection_module(modeling_data):
+def render_feature_selection_module():
     with st.container(border=True):
         st.subheader("Etapa 2: Foco no que Importa - Seleção Automática de Features")
         st.markdown("""
-        **O Quê?** Para garantir uma experiência ágil e objetiva, o sistema agora seleciona as features mais importantes de forma automática. Treinamos um modelo LightGBM e o usamos para ranquear as variáveis. Em seguida, aplicamos um critério de **importância acumulada**.
+        **O Quê?** Para garantir uma experiência ágil e objetiva, carregamos o resultado de uma seleção de features pré-executada. Um modelo LightGBM foi usado para ranquear as variáveis por importância, e o critério de **importância acumulada** foi aplicado.
 
-        **Por quê?** Esta abordagem é extremamente rápida e eficaz. O sistema seleciona o menor número de features que, juntas, explicam **95% do poder preditivo** do modelo. Isso elimina a necessidade de ajuste manual e garante que estamos usando apenas as variáveis mais impactantes, otimizando a performance e reduzindo o ruído.
+        **Por quê?** Esta abordagem é **instantânea** e eficaz. O sistema carrega a lista das features que, juntas, explicam **95% do poder preditivo** do modelo, garantindo que estamos usando apenas as variáveis mais impactantes, otimizando a performance e reduzindo o ruído.
         """)
 
-        if st.button("Executar Seleção Automática de Features", key="fs_button_auto"):
-            selection_artifacts = run_feature_selection_by_importance(
-                modeling_data['X_train_orig'],
-                modeling_data['y_train_orig'],
-                modeling_data['processed_feature_names']
-            )
-            st.session_state['artifacts']['selection_artifacts'] = selection_artifacts
-            st.session_state.app_stage = 'features_selected'
-            st.success("Seleção automática de features concluída!")
-            st.rerun()
+        if st.button("Carregar Resultados da Seleção de Features", key="fs_button_auto"):
+            selection_artifacts = load_selection_artifacts()
+            if selection_artifacts:
+                st.session_state['artifacts']['selection_artifacts'] = selection_artifacts
+                st.session_state.app_stage = 'features_selected'
+                st.success("Resultados da seleção de features carregados com sucesso!")
+                st.rerun()
 
     if 'selection_artifacts' in st.session_state.get('artifacts', {}):
         with st.container(border=True):
             artifacts = st.session_state['artifacts']['selection_artifacts']
             st.subheader("Análise Pós-Seleção")
             st.markdown("""
-            **O que aconteceu?** O modelo LightGBM ranqueou todas as features e o sistema selecionou automaticamente as **{n_feats}** melhores, que juntas explicam 95% da importância total.
-            - **Gráfico de Importância:** O gráfico abaixo mostra o ranking. As features no topo são as que o modelo considera mais decisivas para prever uma reclamação.
+            **O que aconteceu?** Os resultados foram carregados, mostrando que o sistema selecionou automaticamente as **{n_feats}** melhores, que juntas explicam 95% da importância total.
+            - **Gráfico de Importância:** O gráfico abaixo mostra o ranking pré-calculado. As features no topo são as que o modelo considerou mais decisivas para prever uma reclamação.
             - **Lista de Features:** Você pode expandir a seção para ver a lista exata de features que serão usadas na próxima etapa de modelagem.
             """.format(n_feats=artifacts['optimal_n_features']))
             
@@ -756,7 +730,7 @@ def display_modeling_page(df):
     render_data_preparation_module(df)
     
     if 'modeling_data' in st.session_state.get('artifacts', {}):
-        render_feature_selection_module(st.session_state.artifacts['modeling_data'])
+        render_feature_selection_module()
     
     if 'selection_artifacts' in st.session_state.get('artifacts', {}):
         render_baseline_modeling_module()
